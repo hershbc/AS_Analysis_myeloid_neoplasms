@@ -1,0 +1,44 @@
+---
+title: "Filter Deletions Data"
+author: "Courtney Hershberger"
+date: "11/8/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+###Read in table of chromosomal deletions in splicing factors chrX, chr17, chr7, & chr5
+```{r}
+getwd()
+deletions <- read.csv("/Volumes/padgetrlab/courtney/MLL/combinedMLLfiles/2018_10_18_gatk4_CNV_diverse_chr5_chr7_chr17_chrX.tab.txt", header = TRUE, sep="\t", stringsAsFactors = FALSE)
+```
+
+###Filter for samples with WGS and RNA-Seq datasets
+```{r}
+datastatus <- read.table("/Volumes/padgetrlab/courtney/MLL/combinedMLLfiles/2018_11_01_finalsamplelist.txt", sep="\t", header=FALSE, stringsAsFactors = FALSE)
+datastatus_filtered <- datastatus$V1
+
+deletions <- deletions[which(deletions$ARRAY_ID %in% datastatus_filtered),]
+```
+
+###Generate table for waterfallplot
+```{r}
+names(deletions)[names(deletions) == 'ARRAY_ID'] <- 'array_id'
+
+deletions$symbol <- NA
+deletions[which(deletions$CONTIG=="7"),"symbol"]<- "LUC7L2"
+deletions[which(deletions$CONTIG=="17"),"symbol"]<- "PRPF8"
+deletions[which(deletions$CONTIG=="5"),"symbol"]<- "DDX41"
+deletions[which(deletions$CONTIG=="X"),"symbol"]<- "ZRSR2"
+
+LUC7L2_del <- deletions[which(deletions$CONTIG == "7" & deletions$CALL== "-" & (deletions$START<139025105 & deletions$END>139025105 | deletions$START<139108203 & deletions$END>139108203)), c("array_id","START","END","NUM_POINTS_COPY_RATIO","MEAN_LOG2_COPY_RATIO","CALL","Mkh","symbol")]
+PRPF8_del <- deletions[which(deletions$CONTIG == "17" & deletions$CALL== "-" & (deletions$START<1553923 & deletions$END>1553923 | deletions$START<1588176 & deletions$END>1588176)), c("array_id","START","END","NUM_POINTS_COPY_RATIO","MEAN_LOG2_COPY_RATIO","CALL","Mkh","symbol")]
+DDX41_del <- deletions[which(deletions$CONTIG == "5" & deletions$CALL== "-" & (deletions$START<176938578 & deletions$END>176938578 | deletions$START<176943967 & deletions$END>176943967)), c("array_id","START","END","NUM_POINTS_COPY_RATIO","MEAN_LOG2_COPY_RATIO","CALL","Mkh","symbol")]
+ZRSR2_del <- deletions[which(deletions$CONTIG == "X" & deletions$CALL== "-" & (deletions$START<15808574 & deletions$END>15808574 | deletions$START<15841382 & deletions$END>15841382)),c("array_id","START","END","NUM_POINTS_COPY_RATIO","MEAN_LOG2_COPY_RATIO","CALL","Mkh","symbol")]
+
+CNV <- do.call(rbind, list(LUC7L2_del,PRPF8_del,DDX41_del,ZRSR2_del))
+
+write.table(CNV,"/Volumes/padgetrlab/courtney/MLL/all/deletionsdata/deletions_filtered.txt",sep = "\t",quote=FALSE, row.names=FALSE)
+```

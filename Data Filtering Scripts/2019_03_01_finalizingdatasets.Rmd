@@ -1,0 +1,394 @@
+---
+title: "Matching Files"
+author: "Courtney Hershberger"
+date: "3/01/2019"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+---
+
+I have several pieces of data from MLL that have been individually filtered. Today I will also tidy them. 
+1) Somatic Mutations information (filtered 2/20/19)
+2) Datastatus (age, sex) (no need to filter)
+3) CNV information (filtered Nov 8)
+3a) Karyotype information (recieved March 7)
+4) Expression (unfiltered)
+5) Splicing counts(Filtered for biological relevance 1/10/19 then filtered for mis-labeling 2/24/19)
+
+Purpose 1:
+For various reasons, these files contain different sets of patient samples. I know that 1289 patients and 63 controls have information for all files. I need to remove patients that do not fall into that category. I will create a single folder ininputfiles/filtered_tidied/ that contains all of these files. At this step samples with CNV data that does not match karyotype data will be removed.
+
+Purpose 2:
+The CNV data can be combined with the somatic mutations data. The Datastatus (age, sex) information will also be combined with somatic mutations
+
+
+Final Files:
+1) Somatic/deletion/sex/age
+2) Expression
+3) rMATS tables(SJC, IJC, inclevels)
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(edgeR)
+library(data.table)
+library(stringr)
+library(stats)
+library(rstudioapi)
+library(ggplot2)
+```
+
+```{r}
+getwd()
+```
+
+
+
+##Read in Files
+###Somatic Mutations
+```{r}
+mutations <- read.table("../inputfiles/filtered/2019_02_22_mutations_all_filtered.txt", sep = "\t", header = TRUE, stringsAsFactors = FALSE)
+
+mutations[which(mutations$mkh=="s-AML"),"mkh"] <- "AML"
+
+#Add RNA VAF
+mutations$rna_AD_alt <- as.numeric(mutations$rna_AD_alt)
+mutations$rna_AD_ref <- as.numeric(mutations$rna_AD_ref)
+mutations$rna_vaf <- mutations$rna_AD_alt/(mutations$rna_AD_ref + mutations$rna_AD_alt)
+
+mutations_orig <- mutations
+```
+
+###Datastatus
+```{r}
+datastatus <- read.table("../inputfiles/filtered/2018_11_01_finalsamplelist.txt", sep = "\t", header = FALSE, stringsAsFactors = FALSE)
+
+datastatus[which(datastatus$V4=="s-AML"),"V4"] <- "AML"
+```
+
+###CNV
+```{r}
+cnv <- read.table("../inputfiles/filtered/deletions_filtered.txt", sep = "\t", header = TRUE, stringsAsFactors = FALSE)
+
+cnv[which(cnv$Mkh=="s-AML"),"Mkh"] <- "AML"
+
+#bring in karyotype 
+karyotype <- read.table("../inputfiles/raw/karyotype.txt", sep = "\t", header=TRUE, na.strings = "NA", stringsAsFactors = FALSE)
+
+cnv <- merge(cnv, karyotype, by="array_id")
+
+#How many X deletions are unconfirmed?
+x <- cnv[which(cnv$confirmedx=="unconfirmed" & cnv$chrom=="X"),"array_id"]
+#13
+
+#How many 7 deletions are unconfirmed?
+seven <- cnv[which(cnv$confirmed7=="unconfirmed" & cnv$chrom=="7"),"array_id"]
+#10 
+
+#How many 5 deletions are unconfirmed?
+five <- cnv[which(cnv$confirmed5=="unconfirmed" & cnv$chrom=="5"),"array_id"]
+#1
+
+#How many 17 deletions are unconfirmed?
+seventeen <- cnv[which(cnv$confirmed17=="unconfirmed" & cnv$chrom=="17"),"array_id"]
+#4
+
+karytypequestionable <- unique(c(x, seven, five, seventeen))
+#26 samples being removed. 
+
+cnv <- cnv[,!colnames(cnv) %in% c("confirmed5","confirmed7","confirmedx","confirmed17")]
+deletions<- cnv
+```
+
+###Expression
+```{r}
+mdsexpression <- read.delim("../inputfiles/raw/expression/mds_counts.txt")
+healthybmexpression <- read.delim("../inputfiles/raw/expression/Control_cpms.txt")
+
+controls <- colnames(healthybmexpression)
+
+expression <- merge(mdsexpression, healthybmexpression, by=0)
+row.names(expression) <- expression[,1]
+expression <- expression[,-1]
+
+expressioncol <- colnames(expression)
+
+y <- DGEList(counts=expression)
+
+normalized <- log2(cpm(y))
+
+normalized <- data.frame(normalized)
+
+AML_CMML <- read.delim("../inputfiles/raw/expression/AML_CMML_expr.txt")
+MDS_MPNs <- read.delim("../inputfiles/raw/expression/MDS_MPN_expr.txt")
+
+newexpression <- merge(AML_CMML, MDS_MPNs, by=0)
+row.names(newexpression) <- newexpression[,1]
+newexpression <- newexpression[,-1]
+
+log2cpm <- merge(newexpression, normalized, by=0)
+row.names(log2cpm) <- log2cpm[,1]
+log2cpm <- log2cpm[,-1]
+expression_normalized <- log2cpm
+```
+
+###rMATS Inclusion Levels
+```{r}
+readintables <- function(files){
+  filename <- paste("../inputfiles/filtered/rmats/", files, sep="")
+  rmats <- fread(filename, stringsAsFactors = FALSE, sep=" ")
+  rmats <- as.data.frame(rmats)
+  rownames(rmats) <- rmats$V1
+  rmats <- rmats[,-1]
+  rmats$type <- str_extract(files, "A3SS|A5SS|RI|MXE|SE")
+return(rmats)
+}
+list_rmats <- lapply(list.files("../inputfiles/filtered/rmats/", pattern = "filteredlowcount.txt"), readintables)
+
+RMATS <- do.call(rbind, list_rmats)
+
+rm(list_rmats)
+
+type <- RMATS[,"type", drop=FALSE]
+RMATS_Inc <- RMATS[,-length(RMATS)]
+```
+
+###rMATS SJC
+```{r}
+readintables <- function(files){
+  filename <- paste("../inputfiles/filtered/rmats/", files, sep="")
+  rmats <- fread(filename, stringsAsFactors = FALSE, sep=" ")
+  rmats <- as.data.frame(rmats)
+  rownames(rmats) <- rmats$V1
+  rmats <- rmats[,-1]
+
+return(rmats)
+}
+list_rmats <- lapply(list.files("../inputfiles/filtered/rmats/", pattern = "SJC"), readintables)
+
+SJC <- do.call(rbind, list_rmats)
+
+```
+
+###rMATS IJC
+```{r}
+readintables <- function(files){
+  filename <- paste("../inputfiles/filtered/rmats/", files, sep="")
+  rmats <- fread(filename, stringsAsFactors = FALSE, sep=" ")
+  rmats <- as.data.frame(rmats)
+  rownames(rmats) <- rmats$V1
+  rmats <- rmats[,-1]
+
+return(rmats)
+}
+list_rmats <- lapply(list.files("../inputfiles/filtered/rmats/", pattern = "IJC"), readintables)
+
+IJC <- do.call(rbind, list_rmats)
+
+rm(list_rmats)
+```
+
+###rMATS inclengths
+```{r}
+readintables <- function(files){
+  filename <- paste("../inputfiles/filtered/rmats/", files, sep="")
+  rmats <- fread(filename, stringsAsFactors = FALSE, sep=" ")
+  rmats <- as.data.frame(rmats)
+  rownames(rmats) <- rmats$V1
+  rmats$type <- str_extract(files, "A3SS|A5SS|SE|RI|MXE")
+  rmats <- rmats[,-1]
+
+return(rmats)
+}
+list_rmats <- lapply(list.files("../inputfiles/filtered/rmats/", pattern = "inclengths"), readintables)
+
+inclengths <- do.call(rbind, list_rmats)
+
+write.table(inclengths, "../inputfiles/filtered_tidied/2019_03_01_filtered_inclengths.txt", quote = FALSE, sep = "\t")
+
+rm(list_rmats)
+```
+
+```{r}
+controls_id <- read.table("../inputfiles/filtered/controls_ids.txt", stringsAsFactors = FALSE)
+controls_id$V1 <- paste("X",controls_id$V1, sep = "")
+```
+
+
+##Join Mutations/Deletions/Datastatus
+###Mutation and Deletion Status of all samples
+```{r}
+#somatic mutations
+mutations <- mutations[,c("array_id","symbol","consequence","mkh","HGVSp","vaf","ref","pos","alt","chrom","rna_vaf")]
+mutations$caryotype1 <- NA
+mutations$number.cells <- NA
+mutations$caryotype2 <- NA
+mutations$number.cells.1 <- NA
+mutations$caryotype3 <- NA
+mutations$number.cells.2 <- NA
+
+#grab everything after the . of mutations$HGVSp 
+mutations$protein_change <- gsub("(.+)\\.","",mutations$HGVSp)
+
+###Separate Protein Change that is not NULL
+protein_change <- mutations[mutations$protein_change!="NULL",]
+protein_changenull <- mutations[mutations$protein_change=="NULL",]
+
+
+###Convert Amino Acid names from 3 letters to 1
+a <- str_match_all(protein_change$protein_change, "[A-Z]{1}[a-z]{2}")
+
+convert <- function(l) {
+  map <- c("A", "R", "N", "D", "C", "E", "Q", "G", "H", "I",
+           "L", "K", "M", "F", "P", "S", "T", "W", "Y", "V", "*")
+
+  names(map) <- c("Ala", "Arg", "Asn", "Asp", "Cys", "Glu", "Gln",
+                  "Gly", "His", "Ile", "Leu", "Lys", "Met", "Phe",
+                  "Pro", "Ser", "Thr", "Trp", "Tyr", "Val", "Ter")
+
+  sapply(strsplit(l, "(?<=[A-Z]{3})", perl = TRUE),
+         function(x) paste(map[x], collapse = ""))
+}
+
+b <- lapply(a, function(x) convert(x))
+a <- lapply(a, function(x) as.character(x[,1]))
+
+
+for(x in 1:length(b)){
+names(b[[x]]) <- a[[x]]
+}
+
+c <- list()
+
+for(x in 1:length(b)){
+c[x] <-  str_replace_all(as.character(protein_change$protein_change[x]), b[[x]])
+}
+
+protein_change$protein_change <- c
+
+###Recombine Dataframes
+mut_filtered <- rbind(protein_change, protein_changenull)
+mut_filtered$protein_change <- as.character(mut_filtered$protein_change)
+mut_filtered$HGVSp = NULL
+
+#samples with deletions
+deletions <- cnv
+deletions$consequence <- "chrom_deletion"
+deletions$protein_change <- "chrom_deletion"
+names(deletions)[names(deletions) == "Mkh"] <- "mkh"
+deletions$vaf <- NA 
+deletions$ref <- NA
+deletions$pos <- NA
+deletions$alt <- NA
+deletions$rna_vaf <- NA
+
+deletions <- deletions[,c("array_id","symbol","consequence","mkh","protein_change","vaf","ref","pos","alt","chrom","caryotype1","number.cells","caryotype2","number.cells.1","caryotype3","number.cells.2","rna_vaf")]
+
+#Join deletion data with mutation data
+allmutations <- rbind(deletions, mut_filtered)
+
+#Add samples with no mutations but do have disease AND healthy bone marrow controls
+healthybm <- data.frame(V1=controls_id$V2, V2=NA, V3=NA, V4="healthy_bm", V5=NA, V6=NA, V7=NA, V8=NA, V9=NA, V10=NA)
+datastatus <- rbind(datastatus, healthybm)
+dim(datastatus)
+names(datastatus)[1] <- "array_id"
+names(datastatus)[2] <- "sex"
+names(datastatus)[3] <- "age"
+names(datastatus)[4] <- "mkh"
+dataset_nomut <- unique(datastatus[which(!datastatus$array_id %in% allmutations$array_id),c("array_id","mkh")])
+dataset_nomut$symbol <- NA
+dataset_nomut$consequence <- NA
+dataset_nomut$protein_change <- NA
+dataset_nomut$vaf <- NA
+dataset_nomut$ref <- NA
+dataset_nomut$pos <- NA
+dataset_nomut$alt <- NA
+dataset_nomut$chrom <- NA
+dataset_nomut$caryotype1 <- NA
+dataset_nomut$number.cells <- NA
+dataset_nomut$caryotype2 <- NA
+dataset_nomut$number.cells.1 <- NA
+dataset_nomut$caryotype3 <- NA
+dataset_nomut$number.cells.2 <- NA
+dataset_nomut$rna_vaf <- NA
+
+#Combining to create final dataset
+allmutations <- rbind(allmutations, dataset_nomut)
+
+dim(allmutations)
+length(unique(allmutations$array_id))
+
+#Adding datastatus (age, sex)
+allmutations <- merge(allmutations, datastatus[,c("array_id","sex","age")], by="array_id")
+```
+
+
+##Filtering/Tidying
+###Remove samples not present in all files
+```{r}
+x <- colnames(RMATS_Inc)[colnames(RMATS_Inc) %in% datastatus$array_id]
+x <- x[x %in% colnames(expression_normalized)]
+y <- controls_id$V2
+z <- colnames(RMATS_Inc)[grep("control",colnames(RMATS_Inc))]
+
+rmats_namestokeep <- c(x,z)
+length(rmats_namestokeep)
+other_namestokeep <- c(x,y)
+length(other_namestokeep)
+```
+**1347 samples remaining**
+
+###Remove samples where cnv doesn't match karyotype
+```{r}
+rmats_namestokeep <- rmats_namestokeep[!rmats_namestokeep %in% karytypequestionable]
+other_namestokeep <- other_namestokeep[!other_namestokeep %in% karytypequestionable]
+
+length(rmats_namestokeep)
+length(other_namestokeep)
+```
+
+##Write out Filtered/Tidied files
+###Somatic/Deletion/Datastatus files
+```{r}
+allmutations <- allmutations[which(allmutations$array_id %in% other_namestokeep),]
+
+write.table(allmutations, "../inputfiles/filtered_tidied/2019_03_01_combined_mutations_deletions_controls.txt", quote = FALSE, sep = "\t")
+```
+
+###RMATS Files
+Convert control IDs back to original MLL_IDs, I never should have changed them in the first place. 
+```{r}
+RMATS_Inc <- RMATS_Inc[,colnames(RMATS_Inc) %in% rmats_namestokeep]
+setnames(RMATS_Inc, old=colnames(RMATS_Inc[,controls_id$V1]), new=controls_id$V2)
+
+write.table(RMATS_Inc, "../inputfiles/filtered_tidied/2019_03_01_filtered_inclusionlevels.txt", quote = FALSE, sep = "\t")
+rm(RMATS_Inc)
+
+SJC <- SJC[,colnames(SJC) %in% rmats_namestokeep]
+setnames(SJC, old=colnames(SJC[,controls_id$V1]), new=controls_id$V2)
+
+write.table(SJC, "../inputfiles/filtered_tidied/2019_03_01_filtered_skippedjunctioncounts.txt", quote = FALSE, sep = "\t")
+rm(SJC)
+
+IJC <- IJC[,colnames(IJC) %in% rmats_namestokeep]
+setnames(IJC, old=colnames(IJC[,controls_id$V1]), new=controls_id$V2)
+
+write.table(IJC, "../inputfiles/filtered_tidied/2019_03_01_filtered_includedjunctioncounts.txt", quote = FALSE, sep = "\t")
+rm(IJC)
+```
+
+###Expression
+```{r}
+expression_normalized <- expression_normalized[,colnames(expression_normalized) %in% other_namestokeep]
+
+dim(expression_normalized)
+
+write.table(expression_normalized, "../inputfiles/filtered_tidied/2019_03_01_expression.txt", quote = FALSE, sep = "\t")
+```
+Samples missing expression did not contain splicing factor mutations and were removed. 
+[1] "MLL_18543" "MLL_11327" "MLL_11335" "MLL_10806" "MLL_10956"
+
+

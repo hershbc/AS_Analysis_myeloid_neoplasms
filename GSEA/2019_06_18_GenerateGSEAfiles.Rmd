@@ -1,0 +1,459 @@
+---
+title: "Figure4-new"
+author: "Courtney Hershberger"
+date: "6/18/2019"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+source("getfeatures_rMATSids.R")
+source("courtney_colors.R")
+```
+
+```{r}
+library(plyr)
+library(data.table)
+library(stringr)
+library(dplyr)
+library(pheatmap)
+library(qvalue)
+library(GenomicRanges)
+library(RColorBrewer)
+library("readxl")
+library(grid) 
+```
+
+```{r}
+shortnames <- read.table("/Volumes/padgetrlab/courtney/MLL/all/GitHub/inputfiles/filtered_tidied/2019_05_03_shortnames.txt", stringsAsFactors = FALSE, header=TRUE, sep="\t")
+
+addshortnames <- function(dataset, short){
+  dataset <- merge(short[,c("V1","ID")], dataset, by="V1")
+  rownames(dataset) <- dataset$ID
+  dataset$ID <- NULL
+  dataset$V1 <- NULL
+  return(dataset)
+}
+```
+
+#alter pheatmap defaults for rows
+```{r}
+###Fix rowname orientation
+draw_colnames_45 <- function (coln, gaps, ...) {
+    coord = pheatmap:::find_coordinates(length(coln), gaps)
+    x = coord$coord - 0.5 * coord$size
+    res = textGrob(coln, x = x, y = unit(1, "npc") - unit(3,"bigpts"), vjust = 0.5, hjust = 1, rot = 45, gp = gpar(...))
+    return(res)}
+
+## 'Overwrite' default draw_colnames with your own version 
+assignInNamespace(x="draw_colnames", value="draw_colnames_45",
+ns=asNamespace("pheatmap"))
+
+```
+
+
+#Figure 4 (attempt 2) will be a large table assessing the functional consequences of the most interesting 100 splicing changes. It will have columns Exon ontology (binary table), survival, expression (showing median differences between low inclusion and high inclusion), RMATS SURVIV qvalues and GSEA for gene with a specific pathway.
+
+#1 Identify 50 common changes (green)
+###Bring in qvalues matrix & short names
+##Fig 3A
+
+```{r}
+files <- list.files("../rmats_stat/qvalue_sig/", pattern="healthy")
+
+  readinfiles <- function(fileslist){
+    
+  #VS Healthy BM  
+  files <- paste("../rmats_stat/qvalue_sig/",fileslist,sep = "")
+  print(files)
+  rMATS <- fread(files,sep="\t", header=TRUE, stringsAsFactors = FALSE, data.table=FALSE)
+  print(colnames(rMATS))
+
+  #get ID names
+  rMATS$ID <- shortnames$ID[match(rMATS$ID, shortnames$V1)]
+  
+  fileslist <- sub("versus.+","",fileslist,perl = TRUE)
+  print(fileslist)
+
+  rMATS$mkh <- str_extract(fileslist, "AML_|MDS_|CMML_|MDS-MPN-U_|MDS-MPN-RS-T")
+  rMATS$SF <- str_extract(fileslist, "SF3B1|LUC7L2|SRSF2|ZRSR2|PRPF8|DDX41|SF_WT|U2AF1_Q157|U2AF1_S34")
+
+  #VS SF_WT
+  if(grepl("SF3B1|U2AF1|SRSF2",fileslist)){
+    files <- paste("../rmats_stat/qvalue_sig/", fileslist, "versus_",rMATS$mkh[1],"SF_WT_pvalue.txt", sep="")
+  }
+  
+  if(grepl("ZRSR2|LUC7L2|DDX41|PRPF8",fileslist)){
+    files <- paste("../rmats_stat/qvalue_sig/", fileslist, "versus_",rMATS$mkh[1],"high_", rMATS$SF[1],"_pvalue.txt",sep="")
+  }
+
+  rMATS2 <- fread(files,sep="\t", header=TRUE, stringsAsFactors = FALSE, data.table = FALSE)
+  rMATS2$ID <- shortnames$ID[match(rMATS2$ID, shortnames$V1)]
+
+  #For each column that has the same start, take AS events that are not significant in SF WT and are significant in BM
+
+  healthyonly <- rMATS[which(!rMATS$ID %in% rMATS2$ID),"ID",drop=FALSE]
+  SFWTonly <- rMATS2[which(!rMATS2$ID %in% rMATS$ID),"ID",drop=FALSE]
+  middle <- rMATS2[which(rMATS2$ID %in% rMATS$ID),"ID",drop=FALSE]
+  
+  healthyonly$group <- "healthy"
+  SFWTonly$group <- "SF_WT"
+  middle$group <- "both"
+  
+  df <- rbind(healthyonly,SFWTonly,middle)
+  colnames(df) <- c("ID",paste(rMATS$SF[1],rMATS$mkh[1]))
+  rownames(df) <- df$ID
+  df$ID <- NULL
+  
+  rm(rMATS2)
+  rm(rMATS)
+  
+  df <- data.frame(t(df))
+  
+  return(df)
+}
+
+df <- lapply(files, readinfiles)
+
+df_2 <- data.frame(t(do.call(rbind.fill, df)),stringsAsFactors = FALSE)
+
+mycols <- unlist(lapply(df, function(x) rownames(x)))
+
+colnames(df_2) <- mycols 
+```
+
+#Healthy IDs and Both IDs
+```{r}
+mycount <- function(myrow, string){
+  count <- sum(str_count(myrow, string),na.rm=TRUE)
+  return(count)
+}
+
+
+df_2$both <- apply(df_2, 1, mycount, string="both")
+
+both_ID <- rownames(df_2[which(df_2$both >= 10),])
+
+```
+
+###Bring in qvalues matrix, inclevel1, inclevel2 & short names. When adding shortnames, also subset for both IDs
+```{r}
+qvalmatrix <- fread("../figures/supptable1.txt", stringsAsFactors = FALSE, data.table = FALSE)
+inclevel1 <- fread("../figures/supptable_inclevel1.txt", stringsAsFactors = FALSE, data.table = FALSE)
+inclevel2 <- fread("../figures/supptable_inclevel2.txt", stringsAsFactors = FALSE, data.table = FALSE)
+incleveldiff <- fread("../figures/supptable2.txt", stringsAsFactors = FALSE, data.table = FALSE)
+
+qvalmatrix <- addshortnames(dataset=qvalmatrix, short=shortnames)
+inclevel1 <- addshortnames(dataset=inclevel1, short=shortnames)
+inclevel2 <- addshortnames(dataset=inclevel2, short=shortnames)
+incleveldiff <- addshortnames(dataset=incleveldiff, short=shortnames)
+
+#Get comparisons in which healthy bm was the control group
+incleveldiff_2 <- incleveldiff
+qvalmatrix_2 <- qvalmatrix
+
+#column of number of significant groups, subset for AS events with one significant group
+qvalmatrix_2$qcount <- apply(qvalmatrix_2, 1, function(x) length(which(x<=0.05)))
+qvalmatrix_2 <- qvalmatrix_2[which(qvalmatrix_2$qcount>=1),]
+
+#get names of comparisons that are significant when compared to healthy bone marrow, store in column
+getsignificant <- function(myrows){
+  mycol <- which(myrows<=0.05)
+  mycol <- names(mycol)
+  mycol <- paste(mycol, sep=",", collapse=",")
+  return(mycol)
+  
+}
+qvalmatrix_2$qcol <- apply(qvalmatrix_2, 1, getsignificant)
+
+#add list of sig columns to incleveldiff_2
+incleveldiff_2 <- merge(qvalmatrix_2[,c("qcol","qcount")], incleveldiff_2, by='row.names')
+
+#Same direction? Loop over rows(they end up being named character vectors)
+samedirection <- function(myrows){
+  myorigrow <- myrows
+  mycols <- str_split(myrows["qcol"],",", simplify = TRUE)
+  myrows <- as.numeric(myrows[mycols])
+  included <- length(which(myrows>0))
+  return(included)
+
+}
+incleveldiff_2$included <- apply(incleveldiff_2, 1, samedirection)
+
+#get #excluded
+incleveldiff_2$excluded <- incleveldiff_2$qcount-incleveldiff_2$included
+
+#Select for included or excluded in 20 groups
+incleveldiff_2 <- incleveldiff_2[which(incleveldiff_2$included>=10 | incleveldiff_2$excluded>=10),]
+  
+
+#Magnitude of change (Minimum change in the significant group)
+samedirection <- function(myrows){
+  myorigrow <- myrows
+  mycols <- str_split(myrows["qcol"],",", simplify = TRUE)
+  myrows <- as.numeric(myrows[mycols])
+  min<- median(myrows)
+  return(min)
+
+}
+incleveldiff_2$diffmedian <- apply(incleveldiff_2, 1, samedirection)
+incleveldiff_2$absdiffmedian <- abs(incleveldiff_2$diffmedian)
+
+#get shortnames
+output <- incleveldiff_2[,c("Row.names","qcol","qcount","included","excluded","diffmedian","absdiffmedian")]
+output <- merge(output, shortnames, by.x="Row.names",by.y="ID")
+output$type <- str_extract(output$shortname, "SE|RI|A3SS|A5SS")
+
+output$direction <- ifelse(output$included>output$excluded,"included","excluded")
+
+#Filter for change of at least 10%
+output_both <- output[which(output$absdiffmedian>=.10),]
+
+#keep gene with biggest inclevel diff in case of duplicates
+output_both_sub <- output_both %>% 
+             group_by(gene) %>%
+             filter(qcount == max(qcount)) %>%  
+             filter(absdiffmedian == max(absdiffmedian)) %>%
+             arrange(Row.names,qcount,diffmedian,absdiffmedian,shortname,type,direction)
+
+#update both_ID
+both_ID <- both_ID[both_ID %in% output_both_sub$Row.names]
+
+```
+
+
+##Subset for inclevels of interest
+```{r}
+inclevels$V1 <- shortnames$ID[match(inclevels$V1, shortnames$V1)]
+inclevels <- inclevels[inclevels$V1 %in% both_ID,]
+rownames(inclevels) <- inclevels$V1
+inclevels$V1 <- NULL
+inclevels <- data.frame(t(inclevels))
+```
+
+##create groups for each column
+```{r}
+#split inclevels by disease
+MDS <- inclevels[which(rownames(inclevels) %in% mutations[which(mutations$mkh=="MDS"),"array_id"]),]
+AML <- inclevels[which(rownames(inclevels) %in% mutations[which(mutations$mkh=="AML"),"array_id"]),]
+CMML <- inclevels[which(rownames(inclevels) %in% mutations[which(mutations$mkh=="CMML"),"array_id"]),]
+MDSMPNU <- inclevels[which(rownames(inclevels) %in% mutations[which(mutations$mkh=="MDS/MPN-U"),"array_id"]),]
+MDSMPNRST <- inclevels[which(rownames(inclevels) %in% mutations[which(mutations$mkh=="MDS/MPN-RS-T"),"array_id"]),]
+ALL <- inclevels[which(rownames(inclevels) %in% mutations[which(mutations$mkh!="healthy_bm"),"array_id"]),]
+
+getexptable <- function(mycol, disease){
+  #for each column, reorder dataframe and take rownames of top 25% and bottom 25%
+  lowquartile <- round(nrow(disease)/25)
+  highquartile <- nrow(disease)-lowquartile+1
+  
+  genename <- shortnames[which(shortnames$ID==mycol),"gene"]
+  low <- rownames(disease[order(disease[,mycol]),])[1:round(nrow(disease)/25)]
+  high <- rownames(disease[order(disease[,mycol]),])[highquartile:nrow(disease)]
+  #subset expression by the gene of interest and the array_ids, get median
+  loexp <- median(as.numeric(expression[genename,low]))
+  highexp <- median(as.numeric(expression[genename,high]))
+  
+  df <- data.frame(ID=mycol ,gene=genename, low=loexp, high=highexp, stringsAsFactors = FALSE)
+  return(df)
+}
+
+MDSdf <- do.call(rbind,lapply(colnames(MDS), getexptable, disease=MDS))
+AMLdf <- do.call(rbind,lapply(colnames(AML), getexptable, disease=AML))
+CMMLdf <- do.call(rbind,lapply(colnames(CMML), getexptable, disease=CMML))
+MDSMPNUdf <- do.call(rbind,lapply(colnames(MDSMPNU), getexptable, disease=MDSMPNU))
+MDSMPNRSTdf <- do.call(rbind,lapply(colnames(MDSMPNRST), getexptable, disease=MDSMPNRST))
+ALLdf <- do.call(rbind,lapply(colnames(ALL), getexptable, disease=ALL))
+```
+
+
+#GSEA prep: only needs to run once
+#input files
+
+#natural log
+expression_nat <- 2^expression
+
+getexptable <- function(mycol, disease, diseasename){
+
+  #for each column, reorder dataframe and take rownames of top 25% and bottom 25%
+  lowquartile <- round(nrow(disease)/25)
+  highquartile <- nrow(disease)-lowquartile+1
+  
+  genename <- shortnames[which(shortnames$ID==mycol),"gene"]
+  low <- rownames(disease[order(disease[,mycol]),])[1:round(nrow(disease)/25)]
+  high <- rownames(disease[order(disease[,mycol]),])[highquartile:nrow(disease)]
+  #create df
+  expression_nat$NAME <- rownames(expression_nat)
+  expression_nat$Description <- mycol
+  df <- expression_nat[,c("NAME","Description",low,high)]
+  
+  #output files  
+  myfilename <- paste(mycol,diseasename,"gseainput.txt",sep="_")
+  mypath <- paste("/Volumes/padgetrlab/courtney/MLL/all/GitHub/GSEA/",myfilename,sep="")
+  
+  myfilename2 <- paste(mycol,diseasename,"gseainput.cls",sep="_")
+  mypath2 <- paste("/Volumes/padgetrlab/courtney/MLL/all/GitHub/GSEA/",myfilename2,sep="")
+  
+  mydim <- paste(nrow(df),ncol(df),sep=" ")
+
+  #writeLines(c("#1.2",mydim),mypath)
+  write.table(df,mypath, append = FALSE, quote = FALSE, sep="\t", row.names = FALSE)
+  
+  #cls files
+  samplenum <- length(low)+length(high)
+  line1 <- paste(samplenum, "2", "1", sep=" ")
+  line2 <- paste("#","low_inclusion","high_inclusion", sep=" ")
+  low <- rep(0,length(low))
+  high <- rep(1, length(high))
+  line3 <- c(low, high)
+  line3 <- paste(line3, collapse=" ")
+  writeLines(c(line1,line2,line3),mypath2)
+
+
+  return(mypath)
+}
+
+MDS_GSEA_inputlist <- lapply(both_ID, getexptable, disease=MDS, diseasename="MDS")
+AML_GSEA_inputlist <- lapply(both_ID, getexptable, disease=AML, diseasename="AML")
+
+
+
+#GSEA loop
+java -Xmx512m xtools.gsea.Gsea -res /Volumes/padgetrlab/courtney/MLL/all/GitHub/GSEA/rMATS_12600_AML_gseainput.txt -cls /Volumes/padgetrlab/courtney/MLL/all/GitHub/GSEA/rMATS_12600_AML_gseainput.cls#low_inclusion_versus_high_inclusion -gmx gseaftp.broadinstitute.org://pub/gsea/gene_sets_final/h.all.v6.2.symbols.gmt -collapse false -mode Max_probe -norm meandiv -nperm 1000 -permute phenotype -rnd_type no_balance -scoring_scheme weighted -rpt_label my_analysis -metric Signal2Noise -sort real -order descending -create_gcts false -create_svgs false -include_only_symbols true -make_sets true -median false -num 100 -plot_top_x 20 -rnd_seed timestamp -save_rnd_lists false -set_max 500 -set_min 15 -zip_report false -out /Users/hershbc/gsea_home/output/jun26 -gui false
+
+runGSEA <- function(file1){
+  expressiondataset = file1
+  outfile <- sub(".txt","",expressiondataset)
+  outfile <- sub(".*/GSEA/","",outfile)
+  phenotypelabels = sub(".txt",".cls",expressiondataset)
+  experiment = "low_inclusion_versus_high_inclusion"
+  outputdirectory = paste("/Volumes/padgetrlab/courtney/MLL/all/GitHub/GSEA/output/",outfile,sep = "")
+  phenotype_experiment <- paste(phenotypelabels,"#",experiment,sep="")
+  
+  command <-paste("java -cp /Volumes/padgetrlab/Shared_Programs/GSEA/gsea-3.0.jar -Xmx2G xtools.gsea.Gsea -res", expressiondataset, "-cls", phenotype_experiment, "-gmx gseaftp.broadinstitute.org://pub/gsea/gene_sets_final/h.all.v6.1.symbols.gmt -collapse false -mode Max_probe -norm meandiv -nperm 1000 -permute phenotype -rnd_type no_balance -scoring_scheme weighted -rpt_label $output -metric Signal2Noise -sort real -order descending -create_gcts false -create_svgs false -include_only_symbols true -make_sets true -median false -num 100 -plot_top_x 20 -rnd_seed timestamp -save_rnd_lists false -set_max 500 -set_min 15 -zip_report false -out", outputdirectory, "-gui false",sep=" ")
+  
+  system(command)
+}
+
+lapply(MDS_GSEA_inputlist, runGSEA)
+lapply(AML_GSEA_inputlist, runGSEA)
+
+
+
+
+#Go through GSEA data
+```{r}
+getGSEAsig <- function(folder){
+  mypath1 <- paste("../GSEA/output/",folder, sep="")
+  folder2 <- list.files(mypath1)
+  myid <- sub("my_analysis.Gsea.","",folder2)
+  myid2 <- sub("_gseainput","",folder)
+  mypath2 <- paste("../GSEA/output/",folder,"/",folder2,"/gsea_report_for_low_inclusion_",myid,".xls", sep="")
+
+  mypath3 <- paste("../GSEA/output/",folder,"/",folder2,"/gsea_report_for_high_inclusion_",myid,".xls", sep="")
+  low <- fread(mypath2, data.table=FALSE)
+  high <- fread(mypath3, data.table=FALSE)
+  
+  mytable <- rbind(low, high)
+  mytable$ID <- myid2
+  mytable$mkh <- sub("rMATS_.*_","",mytable$ID)
+  mytable$ID <- sub("_MDS|_AML","",mytable$ID)
+  return(mytable)
+
+}
+
+GSEAdf <- do.call(rbind, lapply(list.files("../GSEA/output/", pattern = "rMATS"), getGSEAsig))
+
+GSEAdf <- GSEAdf[which(GSEAdf$`FDR q-val`<=0.25),]
+GSEAdf <- GSEAdf[which(GSEAdf$ID %in% both_ID),]
+GSEAdf <- merge(GSEAdf, shortnames, by="ID")
+GSEAdf$GSEAid <- paste(GSEAdf$shortname, GSEAdf$NAME)
+
+GSEAdf_reproducible <- GSEAdf[duplicated(GSEAdf$GSEAid),"GSEAid"]
+GSEAdf_reproducible <- GSEAdf[which(GSEAdf$GSEAid %in% GSEAdf_reproducible),]
+
+unique(GSEAdf$shortname)
+```
+#Jarek would like the MDS and AML samples combined for the final figure. The MDS and AML separate will be shown in the supplement.
+#GSEA prep: only needs to run once
+#input files
+```{r}
+#list of 6 IDs
+sixIDs <- shortnames[which(shortnames$shortname %in% unique(GSEAdf_reproducible$shortname)),"ID"]
+```
+
+```{r}
+#natural log
+expression_nat <- 2^expression
+
+getexptable <- function(mycol, disease, diseasename){
+
+  #for each column, reorder dataframe and take rownames of top 25% and bottom 25%
+  lowquartile <- round(nrow(disease)/25)
+  highquartile <- nrow(disease)-lowquartile+1
+  
+  genename <- shortnames[which(shortnames$ID==mycol),"gene"]
+  low <- rownames(disease[order(disease[,mycol]),])[1:round(nrow(disease)/25)]
+  high <- rownames(disease[order(disease[,mycol]),])[highquartile:nrow(disease)]
+  #create df
+  expression_nat$NAME <- rownames(expression_nat)
+  expression_nat$Description <- mycol
+  df <- expression_nat[,c("NAME","Description",low,high)]
+  
+  #output files  
+  myfilename <- paste(mycol,diseasename,"gseainput.txt",sep="_")
+  mypath <- paste("/Volumes/padgetrlab/courtney/MLL/all/GitHub/GSEA/",myfilename,sep="")
+  
+  myfilename2 <- paste(mycol,diseasename,"gseainput.cls",sep="_")
+  mypath2 <- paste("/Volumes/padgetrlab/courtney/MLL/all/GitHub/GSEA/",myfilename2,sep="")
+  
+  mydim <- paste(nrow(df),ncol(df),sep=" ")
+
+  #writeLines(c("#1.2",mydim),mypath)
+  write.table(df,mypath, append = FALSE, quote = FALSE, sep="\t", row.names = FALSE)
+  
+  #cls files
+  samplenum <- length(low)+length(high)
+  line1 <- paste(samplenum, "2", "1", sep=" ")
+  line2 <- paste("#","low_inclusion","high_inclusion", sep=" ")
+  low <- rep(0,length(low))
+  high <- rep(1, length(high))
+  line3 <- c(low, high)
+  line3 <- paste(line3, collapse=" ")
+  writeLines(c(line1,line2,line3),mypath2)
+
+
+  return(mypath)
+}
+
+ALL_GSEA_inputlist <- lapply(sixIDs, getexptable, disease=ALL, diseasename="ALL")
+```
+
+
+```{r}
+#GSEA loop
+
+runGSEA <- function(file1){
+  expressiondataset = file1
+  outfile <- sub(".txt","",expressiondataset)
+  outfile <- sub(".*/GSEA/","",outfile)
+  phenotypelabels = sub(".txt",".cls",expressiondataset)
+  experiment = "low_inclusion_versus_high_inclusion"
+  outputdirectory = paste("/Volumes/padgetrlab/courtney/MLL/all/GitHub/GSEA/output/",outfile,sep = "")
+  phenotype_experiment <- paste(phenotypelabels,"#",experiment,sep="")
+  
+  command <-paste("java -cp /Volumes/padgetrlab/Shared_Programs/GSEA/gsea-3.0.jar -Xmx2G xtools.gsea.Gsea -res", expressiondataset, "-cls", phenotype_experiment, "-gmx gseaftp.broadinstitute.org://pub/gsea/gene_sets_final/h.all.v6.1.symbols.gmt -collapse false -mode Max_probe -norm meandiv -nperm 1000 -permute phenotype -rnd_type no_balance -scoring_scheme weighted -rpt_label $output -metric Signal2Noise -sort real -order descending -create_gcts false -create_svgs false -include_only_symbols true -make_sets true -median false -num 100 -plot_top_x 20 -rnd_seed timestamp -save_rnd_lists false -set_max 500 -set_min 15 -zip_report false -out", outputdirectory, "-gui false",sep=" ")
+  
+  system(command)
+}
+
+lapply(ALL_GSEA_inputlist, runGSEA)
+```
+
+
+
+
+

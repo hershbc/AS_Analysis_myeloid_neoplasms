@@ -1,0 +1,83 @@
+---
+title: "Filtering for Biological Significance"
+author: "Courtney Hershberger"
+date: "1/9/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(matrixStats)
+```
+
+Rick had a good idea yesterday. He said that to remove noise from the rMATS dataset, remove any splicing changes that >10% or <90% in a single sample because they will never be biologically interesting. 
+```{r cars}
+IJC <- read.table("/Volumes/padgetrlab/courtney/MLL/all/combinedrmatstable/MXE_filteredlowcount_IJC.txt", header=T, stringsAsFactors = FALSE, sep=" ")
+SJC <- read.table("/Volumes/padgetrlab/courtney/MLL/all/combinedrmatstable/MXE_filteredlowcount_SJC.txt", header=T, stringsAsFactors = FALSE, sep=" ")
+inclengths <- read.table("/Volumes/padgetrlab/courtney/MLL/all/combinedrmatstable/MXE_inclengths.txt", header=T, stringsAsFactors = FALSE, sep=" ")
+filteredlowcount <- read.table("/Volumes/padgetrlab/courtney/MLL/all/combinedrmatstable/MXE_filteredlowcount.txt", header=T, stringsAsFactors = FALSE, sep=" ")
+```
+
+###Calculate Inclusion Levels
+Inclusion Level=(I/lI)/(I/lI+S/lS) 
+```{r}  
+###Normalize to lengths
+#Normalize IJC to length
+
+IJC_matrix <- as.matrix(IJC)
+class(IJC_matrix) <- "numeric"
+IJC_matrix <- t(IJC_matrix)
+normalizedIJC1 <- IJC_matrix/inclengths$IncFormLen[col(IJC_matrix)]
+
+#Normalize SJC to length
+SJC_matrix <- as.matrix(SJC)
+class(SJC_matrix) <- "numeric"
+SJC_matrix <- t(SJC_matrix)
+normalizedSJC1 <- SJC_matrix/inclengths$SkipFormLen[col(SJC_matrix)]
+
+#Calculate inclevel for each 
+inclevel <- normalizedIJC1/(normalizedIJC1+normalizedSJC1)
+```
+
+###Inc Level Spot Check
+I ran the above code, subsetting for the first 10 observations and variables then I spot checked the calculation of the inclusion levels by hand. 
+```{r comment=''}
+cat(readLines('/Volumes/padgetrlab/courtney/MLL/Scripts/rmd_images/2019_01_09_inclevelspotcheck.txt'), sep = '\n')
+```
+
+
+```{r}
+inclevel <- t(inclevel)
+
+hist(rowMeans(inclevel))
+
+```
+```{r}
+inclevel_df <- data.frame(inclevel)
+inclevel_df$relevant <- "discard"
+
+inclevel_df[rowMins(inclevel,na.rm = TRUE)>=0.1 | rowMaxs(inclevel,na.rm = TRUE)<=0.9 ,"relevant"] <- "keep"
+
+hist(rowMins(inclevel,na.rm = TRUE))
+hist(rowMaxs(inclevel,na.rm = TRUE))
+
+table(inclevel_df$relevant)
+
+ID <- rownames(inclevel_df[inclevel_df$relevant=="keep",])
+
+```
+
+```{r}
+IJC_sorted <- IJC[rownames(IJC) %in% ID,]
+write.table(IJC_sorted, "/Volumes/padgetrlab/courtney/MLL/all/combinedrmatstable/biologicalrelevance/MXE_filteredlowcount_IJC.txt", col.names=T, quote = FALSE, sep=" ")
+SJC_sorted <- SJC[rownames(SJC) %in% ID,]
+write.table(SJC_sorted, "/Volumes/padgetrlab/courtney/MLL/all/combinedrmatstable/biologicalrelevance/MXE_filteredlowcount_SJC.txt", col.names=T, quote = FALSE, sep=" ")
+inclengths <- inclengths[rownames(inclengths) %in% ID,]
+write.table(inclengths, "/Volumes/padgetrlab/courtney/MLL/all/combinedrmatstable/biologicalrelevance/MXE_inclengths.txt", col.names=T, quote = FALSE, sep=" ")
+filteredlowcount <- filteredlowcount[rownames(filteredlowcount) %in% ID,]
+write.table(filteredlowcount, "/Volumes/padgetrlab/courtney/MLL/all/combinedrmatstable/biologicalrelevance/MXE_filteredlowcount.txt", col.names=T, quote = FALSE, sep=" ")
+
+```

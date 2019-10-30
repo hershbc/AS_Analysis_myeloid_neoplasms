@@ -1,0 +1,86 @@
+---
+title: "EXONTdb"
+author: "Courtney Hershberger"
+date: "6/21/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+source("getfeatures_rMATSids.R")
+```
+
+```{r}
+library(GenomicRanges)
+```
+
+#ExonOntDB
+```{r}
+library(ontologyIndex)
+library(data.table)
+
+x <- get_OBO("../externaldata/exont.obo.txt", propagate_relationships = "is_a", extract_tags = "minimal")
+y <- fread("../externaldata/exont_annotations_v1.5.0 (1).tsv", stringsAsFactors = FALSE, sep="\t", data.table=FALSE)
+colnames(y) <- c("eo_fullid","chr","strand","start","end")
+y$length <- y$end - y$start
+y$chr <- paste("chr",y$chr, sep="")
+y$strand <- ifelse(y$strand=="-1","-","+")
+
+#create df of names and Ids
+names <- data.frame(x$name, stringsAsFactors = FALSE)
+names$eo_fullid <- rownames(names)
+
+#join coordinates with names
+y <- merge(names, y, by="eo_fullid")
+
+#ancestor terms
+ancestors2 <- (lapply(x$ancestors, function(x) x[2]))
+ancestors2_df <- data.frame(t(data.frame(ancestors2, stringsAsFactors = FALSE)), stringsAsFactors = FALSE)
+colnames(ancestors2_df) <- c("ancestor")
+ancestors2_df$eo_fullid <- rownames(ancestors2_df)
+ancestors2_df$eo_fullid <- sub("\\.",":",ancestors2_df$eo_fullid)
+ancestors2_df <- merge(ancestors2_df, names, by.x="ancestor", by.y="eo_fullid")
+colnames(ancestors2_df) <- c("ancestor","eo_fullid","ancestor_name")
+y <- unique(merge(y, ancestors2_df, by="eo_fullid"))
+exonont <- y
+exonont$ID <- c(1:nrow(exonont))
+```
+
+```{r}
+inclusion <- getfeatures(selection="inc_region")
+inclusion$strand <- ifelse(grepl("-",inclusion$ID),"-","+")
+```
+
+#Identify intersecting regions
+```{r}
+grange_inc <- makeGRangesFromDataFrame(inclusion,
+                         keep.extra.columns=TRUE,
+                         ignore.strand=FALSE,
+                         seqinfo=NULL,
+                         seqnames.field="chr",
+                         start.field="start",
+                         end.field="end",
+                         strand.field="strand",
+                         starts.in.df.are.0based=FALSE)
+
+grange_exont <- makeGRangesFromDataFrame(y,
+                         keep.extra.columns=TRUE,
+                         ignore.strand=FALSE,
+                         seqinfo=NULL,
+                         seqnames.field="chr",
+                         start.field="start",
+                         end.field="end",
+                         strand.field="strand",
+                         starts.in.df.are.0based=FALSE)
+```
+
+```{r}
+x <- mergeByOverlaps(grange_inc, grange_exont)
+
+exont_IDs <- as.matrix(x[,c("ID","ancestor_name")])
+
+write.table(exont_IDs, "/Volumes/padgetrlab/courtney/MLL/all/GitHub/externaldata/exont_rMATS_intersect.txt", quote = FALSE, row.names = FALSE, sep="\t")
+```

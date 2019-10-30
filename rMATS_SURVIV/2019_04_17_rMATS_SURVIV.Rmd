@@ -1,0 +1,128 @@
+---
+title: "rMATS SURVIV"
+author: "Courtney Hershberger"
+date: "April 17, 2019, April 29, 2019"
+output: html_document
+---
+
+4/17/19: Written, the disease name is used 3 times in this script. Each of the three were changed during the 5 runs. Run for CMML, MDS, AML, MDS/MPN-U, MDS/MPN-RS-T  
+4/29/19: Edits to loop through disease names so the script only needs to be run once. Additionally, instead of making an input file with 200,000 splicing changes, the AS events have been filtered. They must have been significant in at least one comparison against healthy bone marrow to be considered. This leaves us with ~18,000 changes. 
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(data.table)
+library(matrixStats)
+```
+
+###There are too many changes. I'm going to only test for signficance for AS events that are signficant compared to healthy bm
+```{r}
+qvalmatrix <- fread("../figures/supptable1.txt", stringsAsFactors = FALSE, data.table = FALSE)
+rownames(qvalmatrix) <- qvalmatrix$V1
+qvalmatrix$V1 <- NULL 
+
+qvalmatrix <- qvalmatrix[,grepl("healthy",colnames(qvalmatrix))]
+
+#if rowMin <= 0.05 then it is significant in one healthy bone marrow group
+qvalmatrix <- qvalmatrix[which(rowMins(as.matrix(qvalmatrix)) <= 0.05),]
+
+```
+
+
+
+###Create inc.txt
+Input: Two input files are required for the SURVIV script. inc.txt: Each row of this input file contains an alternative splicing event. The 5 columns of this input file contain the read counts for the two isoforms of the alternative splicing event. The read counts for different patients are separated by commas in the column. As an example, for exon skipping events, each row defines a skipped exon and the columns contain the read counts for inclusion and skipping isoforms:
+
+ID: User defined ID for the alternative splicing event.
+IJC: inclusion junction counts, patients are separated by comma.
+SJC: skipping junction counts, patients are separated by comma.
+IncFormLen: length of inclusion form, used for normalization.
+SkipFormLen: length of skipping form, used for normalization.
+```{r}
+#somatic mutations
+mutations <- read.csv("../inputfiles/filtered_tidied/2019_03_01_combined_mutations_deletions_controls.txt", header = TRUE, sep="\t", stringsAsFactors = FALSE)
+
+#fix mkh names for downstream use in filename
+mutations[which(mutations$mkh=="MDS/MPN-U"),"mkh"] <- "MDS-MPN-U"
+mutations[which(mutations$mkh=="MDS/MPN-RS-T"),"mkh"] <- "MDS-MPN-RS-T"
+```
+
+###Read in rMATS output
+```{r}
+filtered_IJC <- fread("../inputfiles/filtered_tidied/2019_03_01_filtered_includedjunctioncounts.txt", sep="\t", stringsAsFactors = FALSE, data.table=FALSE)
+rownames(filtered_IJC) <- filtered_IJC$V1
+filtered_IJC$V1 <- NULL
+
+filtered_SJC <- fread("../inputfiles/filtered_tidied/2019_03_01_filtered_skippedjunctioncounts.txt",  sep="\t", stringsAsFactors = FALSE, data.table=FALSE)
+rownames(filtered_SJC) <- filtered_SJC$V1
+filtered_SJC$V1 <- NULL
+
+inclengths <- fread("../inputfiles/filtered_tidied/2019_03_01_filtered_inclengths.txt", sep="\t", stringsAsFactors = FALSE, data.table=FALSE)
+rownames(inclengths) <- inclengths$V1
+inclengths$V1 <- NULL
+inclengths$type <- NULL
+```
+
+
+##Creating RMATS_STAT input divided by disease type and splicing factor mutation
+These SF mutations have enough samples to be run for each disease
+
+###Create surv.txt
+surv.txt: Each row of this input file contains the survival status for a patient. Important. The order of the patients in this file should match the order of patients in inc.txt. The 3 columns of this input file are:
+
+PatientID: User defined ID for the patient.
+Time: Follow up time.
+Event: The status indicator, 0=alive, 1=dead.
+```{r}
+
+creatermatssurv <- function(eachdisease){
+  print(eachdisease)
+  disease <- unique(mutations[which(mutations$mkh==eachdisease),"array_id"])
+  print(length(disease))
+  
+  ##Subset the dataframe for samples of interest
+          
+  filtered_IJC <- filtered_IJC[,which(colnames(filtered_IJC) %in% disease)]
+  filtered_SJC <- filtered_SJC[,which(colnames(filtered_SJC) %in% disease)]
+       
+  ###inc.txt
+  ID <- row.names(filtered_IJC)
+          
+  IJC <- apply(filtered_IJC,1,paste,collapse=",")
+          
+  SJC <- apply(filtered_SJC,1,paste,collapse=",")
+        
+  rMATS_STAT <- data.frame(ID, IJC, SJC)
+          
+  rMATS_STAT <- cbind(rMATS_STAT, inclengths)
+  
+  #Filter for changes that are significant in healthybm
+  rMATS_STAT <- rMATS_STAT[which(rMATS_STAT$ID %in% rownames(qvalmatrix)),]
+  dim(rMATS_STAT)
+          
+  file1 <- paste("../rmats_surviv/",eachdisease,"_inc.txt",sep="")
+    
+  write.table(rMATS_STAT, file1, quote=FALSE, row.names=FALSE, col.names=TRUE, sep = "\t")
+          
+  
+  #surv.txt
+  clinical <- read.table("../inputfiles/filtered_tidied/MLL_survival_data.tsv", header=TRUE)
+  
+  #subset for disease of interest
+  clinical_sub <- clinical[which(clinical$sample_id %in% disease),]
+  
+  colnames(clinical_sub) <- c("PatientID","Time","Event")
+  
+  file2 <- paste("../rmats_surviv/",eachdisease,"_surv.txt",sep="")
+  write.table(clinical_sub, file2, quote=FALSE, row.names=FALSE, col.names=TRUE, sep = "\t")
+
+}
+
+lapply(list("AML","CMML","MDS-MPN-U","MDS","MDS-MPN-RS-T"), creatermatssurv)
+
+
+```

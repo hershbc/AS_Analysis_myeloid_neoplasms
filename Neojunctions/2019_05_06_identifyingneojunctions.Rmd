@@ -1,0 +1,439 @@
+---
+title: "Identifying Neojunctions"
+author: "Courtney Hershberger"
+date: "4/1/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(data.table)
+library(tidyr)
+library(stringr)
+library(matrixStats)
+library(dplyr)
+library(lattice)
+library(RColorBrewer)
+library(pheatmap)
+```
+
+###Read in files
+```{r}
+#Get coordinates for AS Events
+inclengths <- fread("../inputfiles/filtered_tidied/2019_03_01_filtered_inclengths.txt",  sep = "\t", stringsAsFactors = FALSE, data.table=FALSE)
+inclengths <- inclengths[which(inclengths$type!="MXE"),]
+names(inclengths)[names(inclengths) == 'V1'] <- 'ID'
+rownames(inclengths) <- inclengths$ID
+inclengths$ID <- sub(".*chr","",inclengths$ID)
+inclengths$IncFormLen <- NULL
+inclengths$SkipFormLen <- NULL
+inclengths$strand <- ifelse(grepl("\\+",inclengths$ID),"+","-")
+
+#Get skipped junction counts and reformat
+SJC <- fread("../inputfiles/filtered_tidied/2019_03_01_filtered_skippedjunctioncounts.txt", stringsAsFactors = FALSE, data.table=FALSE)
+SJC <- SJC[which(SJC$V1 %in% rownames(inclengths)),]
+rownames(SJC) <- SJC$V1
+SJC$V1 <- NULL
+
+#Get inclusion levels and reformat
+inclusionlevels <- fread("../inputfiles/filtered_tidied/2019_03_01_filtered_inclusionlevels.txt", stringsAsFactors = FALSE, data.table=FALSE)
+inclusionlevels <- inclusionlevels[which(inclusionlevels$V1 %in% rownames(inclengths)),]
+rownames(inclusionlevels) <- inclusionlevels$V1
+inclusionlevels$V1 <- NULL
+
+#Get mutational status
+mutations <- read.csv("../inputfiles/filtered_tidied/2019_03_01_combined_mutations_deletions_controls.txt", header = TRUE, sep="\t", stringsAsFactors = FALSE)
+binary <- read.table("../inputfiles/filtered_tidied/2019_03_01_combined_mutations_deletions_controls_binary.txt", header = TRUE, sep="\t", stringsAsFactors = FALSE)
+
+#Get Expression Data
+expression <- fread("../inputfiles/filtered_tidied/2019_03_01_expression.txt",  sep = "\t", stringsAsFactors = FALSE, data.table=FALSE)
+rownames(expression) <- expression[,1]
+expression$V1 <- NULL
+expression <- data.frame(t(expression))
+```
+
+###Total number of splicing junctions, annotated and unannotated by disease
+```{r}
+
+#Separate files by strand (necessary for getting correct skipping coordinates)
+rMATS<-split(inclengths, list(inclengths$strand,inclengths$type))
+
+#Getting skipping events
+
+identifyallexons <- function(table){
+  
+  if(dim(table)[1]>0){
+#If Skipped Exons
+   if((table[1,"type"]=="SE")){
+     table <- separate(data = table, col = ID, into = c("chr","strand","exonStart_0base","exonEnd","upstreamES","upstreamEE","downstreamES","downstreamEE"), sep = ",")
+   #Moving each distinct start and stop (target, upstream & downstream) to the same position so they can be renamed
+     table1 <-  table[, !(names(table) %in% c("upstreamES","upstreamEE","downstreamES","downstreamEE"))]
+     table2 <-  table[, !(names(table) %in% c("exonStart_0base", "exonEnd","downstreamES","downstreamEE"))]
+     table3 <-  table[, !(names(table) %in% c("exonStart_0base", "exonEnd","upstreamES","upstreamEE"))]
+     tables <- list(table1,table2,table3)
+
+   #change all column names to start and end for downstream compatibility
+    for(k in 1:length(tables)){
+        colnames(tables[[k]])[3]  <- "start"
+        colnames(tables[[k]])[4] <- "end"
+    }
+     
+    #SE skipping information
+    skip <- data.frame(cbind(as.integer(tables[[2]][,"end"]),as.integer(tables[[3]][,"start"])))
+    skip<- cbind(tables[[1]], skip)
+    skip$start <- skip$X1
+    skip$end <- skip$X2
+    }
+
+#If A3SS
+#Minus:
+#table1:shortEE-longExonEnd (need to rearrange)
+#table2:ShortES-ShortEE
+#table3:flankingES-FlankingEE
+#Plus:
+#table1:longExonStart-shortES
+#table2:shortES-longExonEnd (need to rearrange)
+#table3:flankingES-flankingEE
+    if(all(table$type=="A3SS")){
+      table <- separate(data = table, col = ID, into = c("chr","strand","longExonStart_0base","longExonEnd","shortES","shortEE","flankingES","flankingEE"), sep = ",")
+      if(all(table$strand=="-")){
+        #print("It is minus!!!!!!!!!!!!!!!!!!!!!!")
+        table1 <-  table[, !(names(table) %in% c("longExonStart_0base","shortES","flankingES","flankingEE"))]
+         #rearrange table 1
+        table1[c(3,4)] <- table1[c(4,3)]
+        table2 <-  table[, !(names(table) %in% c("longExonStart_0base","longExonEnd","flankingES","flankingEE"))]
+        table3 <-  table[, !(names(table) %in% c("longExonStart_0base","longExonEnd","shortES","shortEE"))]
+        tables <- list(table1,table2,table3)
+
+        for(k in 1:length(tables)){
+          colnames(tables[[k]])[3]  <- "start"
+          colnames(tables[[k]])[4] <- "end"
+         }
+      
+        skip <- data.frame(cbind(as.integer(tables[[2]][,"end"]),as.integer(tables[[3]][,"start"])))
+    skip<- cbind(tables[[1]], skip)
+    skip$start <- skip$X1
+    skip$end <- skip$X2
+        
+        }
+      
+      if(all(table$strand=="+")){
+        table1 <-  table[, !(names(table) %in% c("longExonEnd","shortEE","flankingES","flankingEE"))]
+        table2 <-  table[, !(names(table) %in% c("longExonStart_0base","shortEE","flankingES","flankingEE"))]
+         #rearrange table 2
+        #print(head(table2))
+        table2[c(3,4)] <- table2[c(4,3)] 
+        #print(head(table2))
+        table3 <-  table[, !(names(table) %in% c("longExonStart_0base","longExonEnd","shortES","shortEE"))]
+
+        tables <- list(table1,table2,table3)
+
+        for(k in 1:length(tables)){
+          colnames(tables[[k]])[3]  <- "start"
+          colnames(tables[[k]])[4] <- "end"
+        }
+
+        skip <- data.frame(cbind(as.integer(tables[[3]][,"end"]),as.integer(tables[[2]][,"start"])))
+    skip<- cbind(tables[[1]], skip)
+    skip$start <- skip$X1
+    skip$end <- skip$X2
+      }
+    }
+
+#If A5SS
+#Minus:  
+#table1: blue region (longexonstart-shortES)
+#tables2: shortES to longExonEnd (need to rearrange)
+#tables3: flanking ES to flanking EE
+#Plus:  
+#table1: blue region( shortEE to longExonEnd) (need to rearrange)
+#table2: longexonstart to shortES
+#tables3: flanking ES to flanking EE
+
+    if(all(table$type=="A5SS")){
+     #A5SS skipping information-Strand dependent
+      table <- separate(data = table, col = ID, into = c("chr","strand","longExonStart_0base","longExonEnd","shortES","shortEE","flankingES","flankingEE"), sep = ",")
+      if(all(table$strand=="-")){
+        table1 <-  table[, !(names(table) %in% c("longExonEnd","shortEE","flankingES","flankingEE"))]
+        table2 <-  table[, !(names(table) %in% c("longExonStart_0base","shortEE","flankingES","flankingEE"))]
+         #rearrange table 2
+        table2[c(3,4)] <- table2[c(4,3)] 
+        table3 <-  table[, !(names(table) %in% c("longExonStart_0base","longExonEnd","shortES","shortEE"))]
+        
+        tables <- list(table1,table2,table3) 
+        
+          for(k in 1:length(tables)){
+          colnames(tables[[k]])[3]  <- "start"
+          colnames(tables[[k]])[4] <- "end"
+          }
+      
+        skip <- data.frame(cbind(as.integer(tables[[3]][,"end"]),as.integer(tables[[2]][,"start"])))
+        skip <- cbind(tables[[1]], skip)
+        skip$start <- skip$X1
+        skip$end <- skip$X2
+      }
+     
+    
+    
+      if(all(table$strand=="+")){
+        table1 <-  table[, !(names(table) %in% c("longExonStart_0base","shortES","flankingES","flankingEE"))]
+        #rearrange table 1
+        table1[c(3,4)] <- table1[c(4,3)] 
+        table2 <-  table[, !(names(table) %in% c("longExonEnd","shortEE","flankingES","flankingEE"))]
+        table3 <-  table[, !(names(table) %in% c("longExonStart_0base","longExonEnd","shortES","shortEE"))]
+
+      tables <- list(table1,table2,table3)
+
+      for(k in 1:length(tables)){
+          colnames(tables[[k]])[3]  <- "start"
+          colnames(tables[[k]])[4] <- "end"
+      }
+   
+    
+      skip <- data.frame(cbind(as.integer(tables[[1]][,"start"]),as.integer(tables[[3]][,"start"])))
+      skip<- cbind(tables[[1]], skip)
+      skip$start <- skip$X1
+      skip$end <- skip$X2
+    }
+  }
+
+#If RI
+      if(all(table$type=="RI")){
+        table <- separate(data = table, col = ID, into = c("chr","strand","riExonStart_0base","riExonEnd","upstreamES","upstreamEE","downstreamES","downstreamEE"), sep = ",")
+        table1 <-  table[, !(names(table) %in% c("riExonStart_0base","riExonEnd","upstreamES","downstreamEE"))]
+        table2 <-  table[, !(names(table) %in% c("riExonStart_0base","riExonEnd","downstreamES","downstreamEE"))]
+        table3 <-  table[, !(names(table) %in% c("riExonStart_0base","riExonEnd","upstreamES","upstreamEE"))]
+        
+    
+        tables <- list(table1,table2,table3)
+        
+        for(k in 1:length(tables)){
+          colnames(tables[[k]])[3]  <- "start"
+          colnames(tables[[k]])[4] <- "end"
+        }
+      #RI skipping information
+      skip <- data.frame(cbind(as.integer(tables[[2]][,"end"]),as.integer(tables[[3]][,"start"])))
+      skip <- cbind(tables[[1]], skip)
+      skip$start <- skip$X1
+      skip$end <- skip$X2
+      }
+
+  }#end if dimensions of table are greater than 0
+  #put tables and skip in a list so I can get them out of this function 
+  
+  skip$X1 <- NULL
+  skip$X2 <- NULL
+  return(skip)
+}#end function identifyallexons 
+
+#This is now a list of lists. Each element contains a list of 3 dataframes.
+skipslist <- lapply(rMATS, identifyallexons)
+
+skips <- do.call(rbind, skipslist)
+
+#fix IDs
+rownames(skips) <- gsub(".*\\..*\\.","",rownames(skips))
+
+#create skips column for renaming
+skips$gene <- sub(",.*","",rownames(skips))
+skips$newnames <- paste(skips$gene, ",", skips$start, "-", skips$end, sep="")
+skips <- skips[,"newnames",drop=FALSE]
+
+```
+
+###There are dupliate skipping events present in my data. I will use the skips dataframe to create new rownames that reflect the skipping event and remove duplicates.
+```{r}
+addshortnames <- function(dataset, short){
+  dataset <- merge(short, dataset, by="row.names")
+  dataset$Row.names <- NULL 
+  dataset <- dataset %>% group_by(newnames) %>% summarise_all(funs(mean), na.rm = TRUE)
+  dataset <- data.frame(dataset)
+  rownames(dataset) <- dataset$newnames
+  dataset$newnames <- NULL
+  return(dataset)
+}
+
+inclusionlevels <- addshortnames(dataset=inclusionlevels, short=skips)
+SJC <- addshortnames(dataset=SJC, short=skips)
+```
+
+
+###Remove rows where healthy bm have reads
+```{r}
+healthybm <- mutations[which(mutations$mkh=="healthy_bm"),"array_id"]
+disease <- mutations[which(mutations$mkh!="healthy_bm"),"array_id"]
+
+#Remove rows where healthy bm have reads
+healthybm_0 <- SJC[rowSums(SJC[,healthybm])==0,]
+#16978 AS events have 0 reads in healthybm 
+
+#one sample has read count 3
+skips_3 <- healthybm_0[rowMaxs(as.matrix(healthybm_0))>=3,] #16865 AS events have a minimum of 3 reads in a single sample
+skips_3_20 <- skips_3[rowSums(skips_3)>=20,] #15944 reads have 3 reads in a single sample and 20 reads across the cohort
+
+#10 patients must have inclevel <=90%
+as_10 <- inclusionlevels[which(rownames(inclusionlevels) %in% rownames(skips_3_20)),]
+as_10$count <- apply(as_10, 1, function(x) length(which(x<=0.9)))
+as_10 <- as_10[which(as_10$count>=10),] #1855 remain
+
+#new inclusion levels
+inclevels2 <- inclusionlevels[which(rownames(inclusionlevels) %in% rownames(as_10)),]
+
+```
+
+
+###Identify top 50 TSSEs
+1) Each exon should only be present once
+2) Prioritize changes in which at least 10 samples have a large deviation from 1
+```{r fig4, out.width = '90%'}
+diptestfun <- function(myrow){
+  x <- dip.test(myrow)
+  return(x$p.value)
+}
+diptestlist <- apply(inclevels2, 1, diptestfun)
+diptestlist <- data.frame(diptestlist)
+
+inclevels2 <- cbind(inclevels2, diptestlist)
+inclevels2 <- inclevels2[order(inclevels2$diptestlist),]
+inclevels2$diptestlist <- NULL
+inclevels2_sub <- inclevels2[1:20,]
+```
+
+
+```{r}
+
+AML <- mutations[which(mutations$mkh=="AML"),"array_id"]
+MDS <- mutations[which(mutations$mkh=="MDS"),"array_id"]
+CMML <- mutations[which(mutations$mkh=="CMML"),"array_id"]
+MDSMPNU <- mutations[which(mutations$mkh=="MDS/MPN-U"),"array_id"]
+MDSMPNRST <- mutations[which(mutations$mkh=="MDS/MPN-RS-T"),"array_id"]
+
+#missense mutations
+binary$SF3B1 <- ifelse(binary$SF3B1_Hotspot==1 | binary$SF3B1_missense==1, 1,0)
+binary_short <- binary[,c("SF3B1","SRSF2_P95_Hotspot","U2AF1_S34_Hotspot","U2AF1_Q157_Hotspot")]
+
+#Low Expressors
+expression_short <- expression[,c("LUC7L2","DDX41","PRPF8","ZRSR2")]
+
+#combine
+mygroups <- cbind(binary_short, expression_short)
+
+#This function will make proportions for a dataframe. It takes in a list of array_ids for each group (SF mutations)
+getprop <- function(groups){
+  y <- names(groups[which(groups==1)])
+  y <- apply(inclevels2_sub[,y,drop=FALSE], 1, function(x) length(which(x <= 0.90))/length(x))
+  
+  return(y)
+  
+}
+
+
+#function to create subset list for getprop function
+createlist <- function(diseases){
+  mygroups <- mygroups[which(rownames(mygroups) %in% diseases),]
+  
+  #10%
+  low <- round((length(diseases))/10)
+
+  #expression
+  mygroups <- mygroups[order(mygroups$LUC7L2),]
+  mygroups$LUC7L2 <- 0
+  mygroups[1:low,"LUC7L2"] <- 1
+  
+  mygroups <- mygroups[order(mygroups$ZRSR2),]
+  mygroups$ZRSR2 <- 0
+  mygroups[1:low,"ZRSR2"] <- 1
+  
+  mygroups <- mygroups[order(mygroups$DDX41),]
+  mygroups$DDX41 <- 0
+  mygroups[1:low,"DDX41"] <- 1
+  
+  mygroups <- mygroups[order(mygroups$PRPF8),]
+  mygroups$PRPF8 <- 0
+  mygroups[1:low,"PRPF8"] <- 1
+  
+  apply(mygroups, 2, getprop)
+  
+}
+x <- lapply(list(AML,MDS,CMML,MDSMPNRST,MDSMPNU), createlist)
+
+#fix all members of lists to be dataframe
+makedf <- function(disease){
+  disease <- data.frame(disease)
+  return(disease)
+}
+x <- lapply(x, makedf)
+
+#get row order based on all changes
+hc <- hclust(dist(do.call(cbind, x)))
+ordermatrix <- hc$labels[c(hc$order)]
+
+
+makejpgs <- function(plots, names){
+  myhm <- pheatmap(t(plots[ordermatrix,]), cluster_rows = FALSE, cluster_cols = FALSE, show_rownames = TRUE, show_colnames = FALSE, color = brewer.pal(9,"Blues"))
+  filename <- paste("../figures/levelplot2_",names,".jpg",sep="")  
+  print(filename)
+  jpeg(filename, width = 3.25, height = 0.5, units = 'in', res = 300)
+  myhm
+  dev.off()
+}
+
+mapply(makejpgs, plots=x, names=list("AML","MDS","CMML","MDS_MPN_RS_T","MDS_MPN_U"))
+
+#Make stripplot
+vertical_propmatrix <- data.frame(t(inclevels2[ordermatrix,]))
+my_plot <- stripchart(vertical_propmatrix, pch=20, cex=1, vertical=TRUE, las=2, col="dark gray", cex.axis=2)
+
+jpeg("../figures/stripplot2.jpg", width = 3.25, height = 2, units = 'in', res = 300)
+my_plot
+dev.off()
+
+```
+
+
+
+
+###Survival for never events
+#Combine pvalues from rMATS SURVIV runs
+```{r}
+files1 <- list.files("../rmats_surviv/")
+files1 <- files1[grepl("results",files1)]
+
+readfiles <- function(files1){
+#read in files
+  files2 <- paste("../rmats_surviv/",files1,sep="")
+  print(files1)
+  inc <- fread(files2, stringsAsFactors = FALSE, header=TRUE, data.table = FALSE)
+  inc$mkh <- str_extract(files1, "AML_|MDS_|CMML_|MDS-MPN-U_|MDS-MPN-RS-T")
+  print(colnames(inc))
+  inc <- inc[,c("ID","mkh","PValue")]
+  rownames(inc) <- inc$ID
+  inc$ID <- NULL
+  return(inc)
+}
+
+surviv <- lapply(files1,readfiles)
+surviv_2 <- do.call(cbind, surviv)
+
+savenames <- surviv_2[1,]
+
+surviv_2$mkh <- NULL
+surviv_2$mkh <- NULL
+surviv_2$mkh <- NULL
+surviv_2$mkh <- NULL
+surviv_2$mkh <- NULL
+
+colnames(surviv_2) <- c("AML","CMML","MDS","MDS-MPN-RS-T","MDS-MPN-U")
+
+```
+
+
+```{r}
+surviv_2_sub <- surviv_2[which(rownames(surviv_2) %in% rownames(proportionmatrix_sub)),]
+
+surviv_2_sub
+```
+

@@ -1,0 +1,230 @@
+---
+title: "Filtering MLL Samples"
+author: "Courtney Hershberger"
+date: "02/20/19 edited 3/28/19"
+output: html_document
+---
+
+Filtering was performed on 11/01/19 
+**WGS variant calling identified putative somatic mutations in 62 myeloid neoplasm driver genes. Variants in which >25% of calls did not pass filtering by the variant caller, had a gnomad score greater than 0.0001, or were recognized as a germline mutation in the clinvar database were removed. After filtering, 3835/23863 variants remained. 8 samples contained no somatic variants in the 62 genes queried.** 
+But I have now obtained Vera's filtering scheme which is much more in depth than my current filtering scheme. Filtering in this way should further clean up the data.
+
+3/28/19
+MLL says I should not be removing samples that are less than 0.74 in the filtering scheme. I will change this. 
+
+Notes:
+**Filtering by >=3 reads ALT will change ZRSR2 and SRSF2 a little bit
+
+```{r out.width = '100%'}
+knitr::include_graphics("/Volumes/padgetrlab/courtney/MLL/Scripts/rmd_images/vera_filtering_scheme.png")
+```
+```{r out.width = '100%'}
+knitr::include_graphics("/Volumes/padgetrlab/courtney/MLL/all/GitHub/figures/mutationsfiltering.png")
+```
+
+
+
+```{r}
+library(ggplot2)
+library(dplyr)
+#install.packages('ggthemes', dependencies = TRUE)
+```
+
+###Read in Files
+```{r}
+mutations <- read.table("/Volumes/padgetrlab/courtney/MLL/combinedMLLfiles/mutations_all.txt", sep = "\t", header = TRUE, stringsAsFactors = FALSE, na.strings=c("", "NA"))
+
+nrow(mutations)
+
+```
+###Make extra columns for filtering
+```{r}
+                                                        
+maxvalues <- mutations %>% group_by(var_id) %>% summarise(maxvaf = max(vaf))
+mutations <- merge(mutations, maxvalues)
+
+vafs_df <- mutations %>% group_by(var_id) %>% summarise(vafs = paste(unique(vaf), collapse=","))
+mutations <- merge(mutations, vafs_df)
+
+sum <- mutations %>% group_by(var_id) %>% tally()
+mutations <- merge(mutations, sum)
+
+meanvaf_df <- mutations %>% group_by(var_id) %>% summarise(meanvaf = mean(vaf))
+mutations <- merge(mutations, meanvaf_df)
+
+#pgl is potential germline based on variant allele frequency in the whole cohort
+pgl<-apply(mutations,1, function(x) as.numeric(unlist(strsplit(x["vafs"], split = ","))))
+
+obnoxious <- function(pgl1){
+  #print(pgl1)
+  answers <- ifelse(any(pgl1<0.4|(pgl1>0.6&pgl1<0.9)), "som_vaf","pgl")
+  #print(answers)
+  return(answers)
+}
+somaticvaf <- lapply(pgl, obnoxious)
+
+mutations$somaticvaf <- unlist(somaticvaf)
+
+#cosmic_leuko position 1
+cosmic_leuko_list <-apply(mutations,1, function(x) as.numeric(unlist(strsplit(x["cosmic_leuko"], split = ","))))
+
+obnoxious2 <- function(cosmicleuko1){
+  #print(pgl1)
+  answers <- cosmicleuko1[1]
+  #print(answers)
+  return(answers)
+}
+cosmic_leuko_1st <- lapply(cosmic_leuko_list, obnoxious2)
+
+mutations$cosmic_leuko_1 <- unlist(cosmic_leuko_1st)
+
+
+#relabel NA in cosmic_leuko column
+mutations[is.na(mutations$cosmic_leuko),"cosmic_leuko"] <- "missing"
+
+mutations[is.na(mutations$cosmic_leuko_1),"cosmic_leuko_1"] <- 0
+nrow(mutations)
+
+```
+
+
+###Removed Sequencing Artifacts: Pass, unless well annotated by COSMIC
+```{r}
+mutations <- mutations[which(mutations$filter=="PASS"|(mutations$filter=="LowQscore" & !mutations$cosmic_leuko %in% c("0,0,0","1,0,0","0,1,0","0,0,1","missing"))),]
+nrow(mutations)
+```
+###>=5 total reads, >=3 reads ALT
+```{r}
+nrow(mutations[which((mutations$AD_ref + mutations$AD_alt) <5 | mutations$AD_alt <3),])
+mutations <- mutations[which((mutations$AD_ref + mutations$AD_alt) >=5 & mutations$AD_alt >= 3),]
+nrow(mutations)
+
+```
+
+###GA4GH!=giablow
+```{r}
+
+nrow(mutations[grepl("giablow",mutations$ga4gh_region),])
+mutations <- mutations[!grepl("giablow",mutations$ga4gh_region),]
+nrow(mutations)
+
+```
+
+###GNOMAD_PASS: Removed known variants that occur in more than  0.01% of the population
+```{r}
+
+mutations$gnomad_pass <- round(mutations$gnomad_pass, 4)
+
+mutations <- mutations[which(!mutations$gnomad_pass>0.0001),]
+nrow(mutations)
+```
+###Possible GL?
+###If all samples VAF is between 40-60 or greater than 90
+```{r}
+potentialgermline <- mutations[which(mutations$somaticvaf=="pgl"),]
+likelysomatic <- mutations[which(mutations$somaticvaf=="som_vaf"),]
+nrow(potentialgermline)
+
+#1
+nrow(potentialgermline[which(potentialgermline$cosmic_leuko_1 <= 2 & potentialgermline$n>=3),])
+removeme <- rownames(potentialgermline[which(potentialgermline$cosmic_leuko_1 <= 2 & potentialgermline$n>=3),])
+
+potentialgermline <- potentialgermline[which(!rownames(potentialgermline) %in% removeme),]
+nrow(potentialgermline)
+
+#2
+germline <- c("germline;maternal","germline","germline;paternal")
+nrow(potentialgermline[which(potentialgermline$cosmic_leuko_1 <= 2 & potentialgermline$clinvar_numsub>=3 & potentialgermline$clinvar_origin %in% germline),])
+removeme <- rownames(potentialgermline[which(potentialgermline$cosmic_leuko_1 <= 2 & potentialgermline$clinvar_numsub>=3 & potentialgermline$clinvar_origin %in% germline),])
+
+potentialgermline <- potentialgermline[which(!rownames(potentialgermline) %in% removeme),]
+nrow(potentialgermline)
+
+#3
+nrow(potentialgermline[which(potentialgermline$cosmic_snp=="Yes" & potentialgermline$gnomad_pass>0),])
+removeme <- rownames(potentialgermline[which(potentialgermline$cosmic_snp=="Yes" & potentialgermline$gnomad_pass>0),])
+
+potentialgermline <- potentialgermline[which(!rownames(potentialgermline) %in% removeme),]
+nrow(potentialgermline)
+
+#add back likelysomatic mutations
+mutations <- rbind(potentialgermline, likelysomatic)
+nrow(mutations)
+```
+
+##Possible Artifacts
+###If all VAFs are under 15%
+```{r}
+#4
+nrow(mutations[which(mutations$maxvaf<.17 & mutations$other_pass_per>0.02),])
+removeme <- rownames(mutations[which(mutations$maxvaf<.17 & mutations$other_pass_per>0.02),])
+
+mutations <- mutations[which(!rownames(mutations) %in% removeme),]
+nrow(mutations)
+
+#5
+nrow(mutations[which(mutations$maxvaf<.17 & mutations$other_all_per>0.02),])
+removeme <- rownames(mutations[which(mutations$maxvaf<.17 & mutations$other_all_per>0.02),])
+
+mutations <- mutations[which(!rownames(mutations) %in% removeme),]
+nrow(mutations)
+
+#6
+nrow(mutations[which(mutations$maxvaf<.17 & mutations$mkh_all_per>0.05),])
+removeme <- rownames(mutations[which(mutations$maxvaf<.17 & mutations$mkh_all_per>0.05),])
+
+mutations <- mutations[which(!rownames(mutations) %in% removeme),]
+nrow(mutations)
+
+#7
+nrow(mutations[which(mutations$maxvaf<.17 & mutations$cosmic_leuko_1 <= 2  & !is.na(mutations$ensembl_region)),])
+removeme <- rownames(mutations[which(mutations$maxvaf<.17 & mutations$cosmic_leuko_1 <= 2  & !is.na(mutations$ensembl_region)),])
+
+mutations <- mutations[which(!rownames(mutations) %in% removeme),]
+nrow(mutations)
+
+#8
+nrow(mutations[which(mutations$maxvaf < 0.17 & mutations$n >= 3 & mutations$meanvaf>9 & mutations$meanvaf<11),])
+removeme <- rownames(mutations[which(mutations$maxvaf < 0.17 & mutations$n >= 3 & mutations$meanvaf>8 & mutations$meanvaf<12),])
+
+mutations <- mutations[which(!rownames(mutations) %in% removeme),]
+nrow(mutations)
+```
+
+#remove splicing factors
+```{r}
+SF_mutations <- mutations[which(mutations$symbol %in% c("LUC7L2","DDX41","PRPF8","SF3B1","SRSF2","U2AF1","ZRSR2")),]
+mutations <- mutations[which(!mutations$symbol %in% c("LUC7L2","DDX41","PRPF8","SF3B1","SRSF2","U2AF1","ZRSR2")),]
+```
+
+##Filter for Pathogenic
+###Filter by MLL_pred
+```{r}
+nrow(mutations[which(mutations$MLLpred < 0.25 &  mutations$cosmic_leuko_1 <= 2),])
+removeme <- rownames(mutations[which(mutations$MLLpred < 0.25 &  mutations$cosmic_leuko_1 <= 2),])
+
+mutations <- mutations[which(!rownames(mutations) %in% removeme),]
+nrow(mutations)
+
+```
+
+
+```{r}
+mutations <- rbind(mutations, SF_mutations)
+
+write.table(mutations, "/Volumes/padgetrlab/courtney/MLL/combinedMLLfiles/2019_02_22_mutations_all_filtered.txt", col.names=TRUE, row.names = FALSE, quote=FALSE, sep="\t")
+```
+
+
+```{r fig1, fig.width = 12, fig.asp = .62}
+
+
+mutations_fig <- mutations[,c("mkh", "symbol")]
+
+barplotcounts <- unique(mutations_fig %>% group_by(mkh, symbol) %>% mutate(count = n()))
+
+p <- ggplot(data=barplotcounts, aes(x= reorder(symbol,-count), y=count, fill=mkh)) + geom_bar(stat="identity")
+p <- p + theme(axis.text.x = element_text(angle = 90, hjust = 1)) 
+p <- p + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black")) 
+p
+```

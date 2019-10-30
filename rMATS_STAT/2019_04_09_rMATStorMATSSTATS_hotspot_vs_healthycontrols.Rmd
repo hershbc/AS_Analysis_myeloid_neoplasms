@@ -1,0 +1,204 @@
+---
+title: "rMATS Processing: Subsets rMATS output for rMATS-STAT"
+output: html_document
+date: "3/13/2019 edited 3/27/2019"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+---
+
+This document creates in the input files for rMATS_STAT, the bashscripts joining multiple jobs for the HPC and the batchscripts needed to submit them to the HPC
+This version of the script uses healthy bone marrow as the control group. 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyr)
+library(plyr)
+library(dplyr)
+library(stringr)
+library(data.table)
+```
+
+
+####Read in final mutations file
+```{r}
+#somatic mutations
+mutations <- read.csv("../inputfiles/filtered_tidied/2019_03_01_combined_mutations_deletions_controls.txt", header = TRUE, sep="\t", stringsAsFactors = FALSE)
+binary <- read.csv("../inputfiles/filtered_tidied/2019_03_01_combined_mutations_deletions_controls_binary.txt", header=TRUE, sep="\t", stringsAsFactors = FALSE)
+ids <- read.csv("../inputfiles/filtered_tidied/2019_03_01_filtered_inclengths.txt", header = TRUE, sep="\t", stringsAsFactors = FALSE)
+length(unique(mutations$array_id))
+```
+
+```{r}
+#List for disease subtype
+AML <- mutations[which(mutations$mkh=="AML"),"array_id"]
+MDS <- mutations[which(mutations$mkh=="MDS"),"array_id"]
+CMML <- mutations[which(mutations$mkh=="CMML"),"array_id"]
+MDS_MPN_RS_T <- mutations[which(mutations$mkh=="MDS/MPN-RS-T"),"array_id"]
+MDS_MPN_U <- mutations[which(mutations$mkh=="MDS/MPN-U"),"array_id"]
+
+binary_subset <- binary[,grep("SF3B1|SRSF2|U2AF1",colnames(binary))]
+
+#Combine SF3B1 Hotspot and Missense
+binary_subset$SF3B1 <- as.numeric(ifelse(binary_subset$SF3B1_Hotspot==1|binary_subset$SF3B1_missense==1,"1","0"))
+
+#Remove comparisons that I'm not currently interested in.
+binary_subset$SF3B1_Hotspot <- NULL
+binary_subset$SF3B1_missense <- NULL
+binary_subset$SRSF2_missense <- NULL
+binary_subset$U2AF1_missense <- NULL
+
+
+#Add Healthy BM column
+binary_subset$healthy_bm <- ifelse(rownames(binary_subset) %in% mutations[mutations$mkh=="healthy_bm","array_id"],"1","0")
+
+k <- which(binary_subset>=1, arr.ind=TRUE)
+binary_subset[k] <- rownames(k)
+
+binary_subset[binary_subset == 0] <- NA
+```
+
+###Read in rMATS output
+```{r}
+filtered_IJC <- fread("../inputfiles/filtered_tidied/2019_03_01_filtered_includedjunctioncounts.txt", sep="\t", stringsAsFactors = FALSE, data.table=FALSE)
+rownames(filtered_IJC) <- filtered_IJC$V1
+filtered_IJC$V1 <- NULL
+
+filtered_SJC <- fread("../inputfiles/filtered_tidied/2019_03_01_filtered_skippedjunctioncounts.txt",  sep="\t", stringsAsFactors = FALSE, data.table=FALSE)
+rownames(filtered_SJC) <- filtered_SJC$V1
+filtered_SJC$V1 <- NULL
+
+inclengths <- fread("../inputfiles/filtered_tidied/2019_03_01_filtered_inclengths.txt", sep="\t", stringsAsFactors = FALSE, data.table=FALSE)
+rownames(inclengths) <- inclengths$V1
+inclengths$V1 <- NULL
+```
+###Remove MXE
+```{r}
+filtered_IJC <- filtered_IJC[which(inclengths$type!="MXE"),]
+filtered_SJC <- filtered_SJC[which(inclengths$type!="MXE"),]
+inclengths <- inclengths[which(inclengths$type!="MXE"),]
+```
+
+##Creating RMATS_STAT input divided by disease type and splicing factor mutation
+These SF mutations have enough samples to be run for each disease
+```{r}
+make_rmats_stat_files <- function(column, disease, disease_subset){
+
+  #disease <- "MDS"
+  test <- column
+  
+  condition <- binary_subset[,column]
+  condition <- condition[!is.na(condition)]
+  print(condition)
+  
+  control <- binary_subset$healthy_bm[!is.na(binary_subset$healthy_bm)]
+  
+  #Subset for disease
+  condition <- condition[condition %in% disease_subset]
+  
+  print(column)
+  print(length(condition))
+  print(length(control))
+  
+  if(length(condition) >= 2 & length(control>= 2)){
+    
+    comparison <- paste(disease,"_",test,"_versus_","healthy_bm", sep="")   
+    
+    ##Subset the dataframe for samples of interest
+        
+    filtered_IJC_condition <- filtered_IJC[,which(colnames(filtered_IJC) %in% condition)]
+    filtered_SJC_condition <- filtered_SJC[,which(colnames(filtered_SJC) %in% condition)]
+        
+    filtered_IJC_control <- filtered_IJC[,which(colnames(filtered_IJC) %in% control)]
+    filtered_SJC_control <- filtered_SJC[,which(colnames(filtered_SJC) %in% control)]
+        
+    ###Create final dataframe
+        
+    ID <- row.names(filtered_IJC_condition)
+        
+    IJC1 <- apply(filtered_IJC_condition,1,paste,collapse=",")
+        
+    SJC1 <- apply(filtered_SJC_condition,1,paste,collapse=",")
+        
+    IJC2 <- apply(filtered_IJC_control,1,paste,collapse=",")
+        
+    SJC2<- apply(filtered_SJC_control,1,paste,collapse=",")
+        
+    rMATS_STAT <- data.frame(ID, IJC1, SJC1, IJC2, SJC2)
+        
+    rMATS_STAT <- cbind(rMATS_STAT, inclengths)
+        
+    file4 <- paste("../rmats_stat/hotspot_vs_healthybm/",comparison,".txt",sep="")
+    print(head(file4))
+    write.table(rMATS_STAT, file4, quote=FALSE, row.names=FALSE, col.names=TRUE, sep = "\t")
+        
+    file5 <- paste("../rmats_stat/hotspot_vs_healthybm/",disease,"_",test,".txt",sep="")
+    write(condition, file5)
+        
+    file6 <- paste("../rmats_stat/hotspot_vs_healthybm/",disease,"_healthy_bm",".txt",sep="")
+    write(control, file6)
+    } 
+}
+
+sapply(colnames(binary_subset), disease="MDS", disease_subset=MDS, make_rmats_stat_files)
+sapply(colnames(binary_subset), disease="AML", disease_subset=AML, make_rmats_stat_files)
+sapply(colnames(binary_subset), disease="CMML", disease_subset=CMML, make_rmats_stat_files)
+sapply(colnames(binary_subset), disease="MDS-MPN-U", disease_subset=MDS_MPN_U, make_rmats_stat_files)
+```
+
+##Generating BASH files to submit on HPC
+
+##Generating BATCH script for HPC
+\\#!/bin/sh
+
+\\#SBATCH --mail-type=ALL
+\\#SBATCH --mail-user=hershbc@ccf.org
+\\#SBATCH --job-name=bash5
+\\#SBATCH -N1
+\\#SBATCH --exclusive
+
+srun python2.7 rMATS_unpaired.py A3SS_MDS_ZRSR2_Other_versus_MDS_SF_WT.txt output/2019_01_28_A3SS_MDS_ZRSR2_Other_versus_MDS_SF_WT_pvalue/ 20 0.1 > output/2019_01_28_A3SS_MDS_ZRSR2_Other_versus_MDS_SF_WT_pvalue/log.txt
+```{r}
+inputfiles <- list.files("../rmats_stat/hotspot_vs_healthybm/", pattern = "versus")
+outputfiles <- lapply(inputfiles, function(x) sub(".txt","",x))
+
+makebashscript <- function(inputfile, outputfile){
+  command <- paste("python2.7 rMATS_unpaired.py"," ",inputfile," ","output/",outputfile,"_pvalue/"," 20"," 0.05 > ","output/",outputfile,"_pvalue/log.txt", sep="")
+  outputfile <- paste("mkdir output/",outputfile,"_pvalue",sep="")
+  x <- c(outputfile, command)
+  
+}
+
+
+x <- mapply(makebashscript, inputfiles, outputfiles)
+
+#Make several bash files to split up the job on cluster
+makebashfiles <- function(gene){
+
+  y <- x[grep(gene,x)]
+  job <- paste("#SBATCH --job-name=rmats_stat_",gene,sep="")
+  y <- paste("srun ",y)
+  #add shebang line
+  y <- c("#!/bin/bash","#SBATCH --mail-type=ALL","#SBATCH --mail-user=hershbc@ccf.org",job,"#SBATCH -N1","#SBATCH --exclusive","module load python/2.7.13",y)
+  #write out to file
+  filename <- paste("../rmats_stat/hotspot_vs_healthybm/batchscript_",gene,".sh",sep = "")
+  fileConn<-file(filename)
+  writeLines(y, fileConn)
+  close(fileConn)
+}
+
+lapply(list("SF3B1","SRSF2","U2AF1"),makebashfiles)
+```
+
+
+
+
+
+
+
+
+

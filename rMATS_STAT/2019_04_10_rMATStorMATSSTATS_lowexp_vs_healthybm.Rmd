@@ -1,0 +1,261 @@
+---
+title: "rMATS Processing: Subsets rMATS output for rMATS-STAT"
+output: html_document
+date: "4/10/2019"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+---
+
+This document creates in the input files for rMATS_STAT, the bashscripts joining multiple jobs for the HPC and the batchscripts needed to submit them to the HPC
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyr)
+library(plyr)
+library(dplyr)
+library(stringr)
+library(data.table)
+```
+
+
+
+####Read in final mutations file
+```{r}
+#somatic mutations
+mutations <- read.csv("../inputfiles/filtered_tidied/2019_03_01_combined_mutations_deletions_controls.txt", header = TRUE, sep="\t", stringsAsFactors = FALSE)
+ids <- read.csv("../inputfiles/filtered_tidied/2019_03_01_filtered_inclengths.txt", header = TRUE, sep="\t", stringsAsFactors = FALSE)
+length(unique(mutations$array_id))
+
+#expression
+expression <- fread("../inputfiles/filtered_tidied/2019_03_01_expression.txt",  sep = "\t", stringsAsFactors = FALSE, data.table=FALSE)
+rownames(expression) <- expression[,1]
+expression$V1 <- NULL
+expression <- data.frame(t(expression))
+expression_short <- expression[,c("LUC7L2","PRPF8","ZRSR2","DDX41"),]
+
+```
+
+```{r}
+binary <- read.csv("../inputfiles/filtered_tidied/2019_03_01_combined_mutations_deletions_controls_binary.txt", header=TRUE, sep="\t", stringsAsFactors = FALSE)
+
+binary_subset <- binary
+#Add Healthy BM column
+binary_subset$healthy_bm <- ifelse(rownames(binary_subset) %in% mutations[mutations$mkh=="healthy_bm","array_id"],"1","0")
+
+k <- which(binary_subset>=1, arr.ind=TRUE)
+binary_subset[k] <- rownames(k)
+
+binary_subset[binary_subset == 0] <- NA
+```
+
+
+```{r}
+#List for disease subtype
+AML <- mutations[which(mutations$mkh=="AML"),"array_id"]
+MDS <- mutations[which(mutations$mkh=="MDS"),"array_id"]
+CMML <- mutations[which(mutations$mkh=="CMML"),"array_id"]
+MDS_MPN_RS_T <- mutations[which(mutations$mkh=="MDS/MPN-RS-T"),"array_id"]
+MDS_MPN_U <- mutations[which(mutations$mkh=="MDS/MPN-U"),"array_id"]
+```
+
+###Dividing Expression by disease type
+```{r}
+AML_exp <- expression_short[which(rownames(expression_short) %in% AML),]
+MDS_exp <- expression_short[which(rownames(expression_short) %in% MDS),]
+CMML_exp <- expression_short[which(rownames(expression_short) %in% CMML),]
+MDS_MPN_U_exp <- expression_short[which(rownames(expression_short) %in% MDS_MPN_U),]
+```
+
+###Create lists for high and low expression of LUC7L2, DDX41, ZRSR2, PRPF8 in each disease subtype
+```{r}
+
+createbinary <- function(expression_short){
+  
+  onetenth <- round(nrow(expression_short)/10)
+  print(onetenth)
+    
+  #Getting lists for final table
+  #LUC7L2
+  expression_short <- expression_short[order(expression_short$LUC7L2),]
+  LUC7L2low <- rownames(expression_short)[1:onetenth]
+
+  expression_short$LUC7L2cat <- NA
+  expression_short[which(rownames(expression_short) %in% LUC7L2low),"LUC7L2cat"] <- "low"
+
+  
+  #PRPF8
+  expression_short <- expression_short[order(expression_short$PRPF8),]
+  PRPF8low <- rownames(expression_short)[1:onetenth]
+  
+  expression_short$PRPF8cat <- NA
+  expression_short[which(rownames(expression_short) %in% PRPF8low),"PRPF8cat"] <- "low"
+  
+  #ZRSR2
+  expression_short <- expression_short[order(expression_short$ZRSR2),]
+  ZRSR2low <- rownames(expression_short)[1:onetenth]
+  
+  expression_short$ZRSR2cat <- NA
+  expression_short[which(rownames(expression_short) %in% ZRSR2low),"ZRSR2cat"] <- "low"
+  
+  #DDX41
+  expression_short <- expression_short[order(expression_short$DDX41),]
+  DDX41low <- rownames(expression_short)[1:onetenth]
+  
+  expression_short$DDX41cat <- NA
+  expression_short[which(rownames(expression_short) %in% DDX41low),"DDX41cat"] <- "low"
+  
+  expression_short$LUC7L2 <- NULL
+  expression_short$DDX41 <- NULL
+  expression_short$PRPF8 <- NULL
+  expression_short$ZRSR2 <- NULL
+  
+  return(expression_short)
+}
+
+binary_list <- lapply(list(AML_exp,MDS_exp,CMML_exp,MDS_MPN_U_exp), createbinary)
+```
+
+
+
+###Read in rMATS output
+```{r}
+filtered_IJC <- fread("../inputfiles/filtered_tidied/2019_03_01_filtered_includedjunctioncounts.txt", sep="\t", stringsAsFactors = FALSE, data.table=FALSE)
+rownames(filtered_IJC) <- filtered_IJC$V1
+filtered_IJC$V1 <- NULL
+
+filtered_SJC <- fread("../inputfiles/filtered_tidied/2019_03_01_filtered_skippedjunctioncounts.txt",  sep="\t", stringsAsFactors = FALSE, data.table=FALSE)
+rownames(filtered_SJC) <- filtered_SJC$V1
+filtered_SJC$V1 <- NULL
+
+inclengths <- fread("../inputfiles/filtered_tidied/2019_03_01_filtered_inclengths.txt", sep="\t", stringsAsFactors = FALSE, data.table=FALSE)
+rownames(inclengths) <- inclengths$V1
+inclengths$V1 <- NULL
+```
+
+###Remove MXE
+```{r}
+filtered_IJC <- filtered_IJC[which(inclengths$type!="MXE"),]
+filtered_SJC <- filtered_SJC[which(inclengths$type!="MXE"),]
+inclengths <- inclengths[which(inclengths$type!="MXE"),]
+```
+
+##Creating RMATS_STAT input divided by disease type and splicing factor mutation
+These SF mutations have enough samples to be run for each disease
+```{r}
+make_rmats_stat_files <- function(column, table, disease){
+  
+  test <- sub("cat","",column)
+  
+  #condition
+  condition <- table[,column,drop=FALSE]
+  condition <- rownames(subset(condition, condition[,1] == "low"))
+  print(condition)
+  
+  control <- binary_subset$healthy_bm[!is.na(binary_subset$healthy_bm)]
+  print(control)
+
+  
+  if(length(condition) >= 2 & length(control>= 2)){
+    
+    comparison <- paste(disease,"_low_",test,"_versus_","healthy_bm", sep="")   
+    
+    ##Subset the dataframe for samples of interest
+        
+    filtered_IJC_condition <- filtered_IJC[,which(colnames(filtered_IJC) %in% condition)]
+    filtered_SJC_condition <- filtered_SJC[,which(colnames(filtered_SJC) %in% condition)]
+        
+    filtered_IJC_control <- filtered_IJC[,which(colnames(filtered_IJC) %in% control)]
+    filtered_SJC_control <- filtered_SJC[,which(colnames(filtered_SJC) %in% control)]
+        
+    ###Create final dataframe
+        
+    ID <- row.names(filtered_IJC_condition)
+        
+    IJC1 <- apply(filtered_IJC_condition,1,paste,collapse=",")
+        
+    SJC1 <- apply(filtered_SJC_condition,1,paste,collapse=",")
+        
+    IJC2 <- apply(filtered_IJC_control,1,paste,collapse=",")
+        
+    SJC2<- apply(filtered_SJC_control,1,paste,collapse=",")
+        
+    rMATS_STAT <- data.frame(ID, IJC1, SJC1, IJC2, SJC2)
+        
+    rMATS_STAT <- cbind(rMATS_STAT, inclengths)
+        
+    file4 <- paste("../rmats_stat/lowexpr_vs_healthybm/",comparison,".txt",sep="")
+    print(head(file4))
+    write.table(rMATS_STAT, file4, quote=FALSE, row.names=FALSE, col.names=TRUE, sep = "\t")
+        
+    file5 <- paste("../rmats_stat/lowexpr_vs_healthybm/",disease,"_low_",test,".txt",sep="")
+    write(condition, file5)
+        
+    file6 <- paste("../rmats_stat/lowexpr_vs_healthybm/healthybm.txt",sep="")
+    write(control, file6)
+    } 
+}
+
+sapply(colnames(binary_list[[2]]), table=binary_list[[2]], disease="MDS", make_rmats_stat_files)
+sapply(colnames(binary_list[[1]]), table=binary_list[[1]], disease="AML", make_rmats_stat_files)
+sapply(colnames(binary_list[[3]]), table=binary_list[[3]], disease="CMML", make_rmats_stat_files)
+sapply(colnames(binary_list[[4]]), table=binary_list[[4]], disease="MDS-MPN-U", make_rmats_stat_files)
+```
+
+
+##Generating BASH files to submit on HPC
+
+##Generating BATCH script for HPC
+\\#!/bin/sh
+
+\\#SBATCH --mail-type=ALL
+\\#SBATCH --mail-user=hershbc@ccf.org
+\\#SBATCH --job-name=bash5
+\\#SBATCH -N1
+\\#SBATCH --exclusive
+
+srun python2.7 rMATS_unpaired.py A3SS_MDS_ZRSR2_Other_versus_MDS_SF_WT.txt output/2019_01_28_A3SS_MDS_ZRSR2_Other_versus_MDS_SF_WT_pvalue/ 20 0.1 > output/2019_01_28_A3SS_MDS_ZRSR2_Other_versus_MDS_SF_WT_pvalue/log.txt
+```{r}
+inputfiles <- list.files("../rmats_stat/lowexpr_vs_healthybm/", pattern = "versus")
+outputfiles <- lapply(inputfiles, function(x) sub(".txt","",x))
+
+makebashscript <- function(inputfile, outputfile){
+  command <- paste("python2.7 rMATS_unpaired.py"," ",inputfile," ","output/",outputfile,"_pvalue/"," 20"," 0.05 > ","output/",outputfile,"_pvalue/log.txt", sep="")
+  outputfile <- paste("mkdir output/",outputfile,"_pvalue",sep="")
+  x <- c(outputfile, command)
+  
+}
+
+
+x <- mapply(makebashscript, inputfiles, outputfiles)
+
+#Make several bash files to split up the job on cluster
+makebashfiles <- function(gene){
+
+  y <- x[grep(gene,x)]
+  job <- paste("#SBATCH --job-name=rmats_stat_",gene,sep="")
+  y <- paste("srun ",y)
+  #add shebang line
+  y <- c("#!/bin/bash","#SBATCH --mail-type=ALL","#SBATCH --mail-user=hershbc@ccf.org",job,"#SBATCH -N1","#SBATCH --exclusive","module load python/2.7.13",y)
+  #write out to file
+  filename <- paste("../rmats_stat/lowexpr_vs_healthybm/batchscript_",gene,".sh",sep = "")
+  fileConn<-file(filename)
+  writeLines(y, fileConn)
+  close(fileConn)
+}
+
+lapply(list("LUC7L2","DDX41","PRPF8","ZRSR2"),makebashfiles)
+```
+
+
+
+
+
+
+
+
+

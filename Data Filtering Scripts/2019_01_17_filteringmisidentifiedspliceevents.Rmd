@@ -1,0 +1,624 @@
+---
+title: "Filtering Misslabeled Events"
+author: "Courtney Hershberger"
+date: "1/17/2019-1/23/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r eval=FALSE}
+todaydate <- "20190123"
+```
+
+```{r}
+library(stringr)
+library(RColorBrewer)
+library(tidyr)
+library(foreach)
+library(plyr)
+library(dplyr)
+library(data.table)
+library(GenomicRanges)
+```
+
+###Get UCSC exons
+```{r}
+knitr::include_graphics("/Volumes/padgetrlab/courtney/MLL/Scripts/rmd_images/Screen Shot 2019-01-17 at 10.43.01 AM.png")
+knitr::include_graphics("/Volumes/padgetrlab/courtney/MLL/Scripts/rmd_images/Screen Shot 2019-01-17 at 10.43.15 AM.png")
+```
+###Get UCSC introns
+```{r}
+knitr::include_graphics("/Volumes/padgetrlab/courtney/MLL/Scripts/rmd_images/Screen Shot 2019-01-17 at 10.43.15 AM.png")
+knitr::include_graphics("/Volumes/padgetrlab/courtney/MLL/Scripts/rmd_images/Screen Shot 2019-01-17 at 10.43.52 AM.png")
+```
+###Get UCSC whole genes
+```{r}
+knitr::include_graphics("/Volumes/padgetrlab/courtney/MLL/Scripts/rmd_images/Screen Shot 2019-01-17 at 10.47.39 AM.png")
+knitr::include_graphics("/Volumes/padgetrlab/courtney/MLL/Scripts/rmd_images/Screen Shot 2019-01-17 at 10.47.55 AM.png")
+```
+###Read in UCSC exons, introns and format
+```{r eval=FALSE}
+exons <- fread("/Volumes/padgetrlab/courtney/MLL/tablebrowserfiles/hg19exons_UCSC.bed", stringsAsFactors = FALSE)
+introns <- fread("/Volumes/padgetrlab/courtney/MLL/tablebrowserfiles/hg19introns_UCSC.bed", stringsAsFactors = FALSE)
+
+bedfiles <- list(exons,introns)
+
+formatbed <- function(bedfile){
+  head(bedfile)
+  colnames(bedfile) <- c("chr", "start", "end", "ID", "placeholder", "strand")
+  bedfile <- bedfile[,c("chr","strand","start","end")]
+  bedfile <- unique(bedfile)
+  return(bedfile)
+}
+
+bedfiles <- lapply(bedfiles, formatbed)
+```
+###Read in UCSC genes and format
+```{r eval=FALSE}
+genes <- fread("/Volumes/padgetrlab/courtney/MLL/tablebrowserfiles/hg19genes_UCSC.bed", stringsAsFactors = FALSE)
+colnames(genes) <- c("ID","chr","strand","start","end","name")
+genes <- genes[,c("chr","strand","start","end","name")]
+```
+###Prepare UCSC GeneNames for assigning gene names to rMATS output
+```{r eval=FALSE}
+UCSC_rng <- makeGRangesFromDataFrame(genes,
+                         keep.extra.columns=TRUE,
+                         ignore.strand=FALSE,
+                         seqinfo=NULL,
+                         seqnames.field="chr", 
+                         start.field="start",
+                         end.field="end",
+                         strand.field="strand",
+                         starts.in.df.are.0based=TRUE)
+```
+###Read in rMATS files
+```{r, warning=F}
+A3SS <- fread("/Volumes/padgetrlab/courtney/MLL/all/combinedrmatstable/biologicalrelevance/A3SS_inclengths.txt",sep=" ", stringsAsFactors = FALSE)
+A3SS <- data.frame(A3SS)
+A3SS$type <- "A3SS"
+A5SS <- fread("/Volumes/padgetrlab/courtney/MLL/all/combinedrmatstable/biologicalrelevance/A5SS_inclengths.txt",sep=" ", stringsAsFactors = FALSE)
+A5SS$type <- "A5SS"
+A5SS <- data.frame(A5SS)
+RI <- fread("/Volumes/padgetrlab/courtney/MLL/all/combinedrmatstable/biologicalrelevance/RI_inclengths.txt",sep=" ", stringsAsFactors = FALSE)
+RI$type <- "RI"
+RI <- data.frame(RI)
+SE <- fread("/Volumes/padgetrlab/courtney/MLL/all/combinedrmatstable/biologicalrelevance/SE_inclengths.txt",sep=" ", stringsAsFactors = FALSE)
+SE$type <- "SE"
+SE <- data.frame(SE)
+
+rmats <- list(A3SS,A5SS,SE,RI)
+
+rMATS_format <- function(rmatsbed){
+  #Splitting column by comma and renaming
+  colnames(rmatsbed)[1] <- "ID"
+  rownames(rmatsbed) <- rmatsbed$ID
+  rmats_plus <- rmatsbed[which(grepl("\\+",rmatsbed$ID)),]
+  rmats_minus <- rmatsbed[which(grepl("-",rmatsbed$ID)),]
+  rmatsbed <- list(rmats_plus, rmats_minus)
+  return(rmatsbed)
+}
+
+rmats_strand <- lapply(rmats, rMATS_format)
+rmats_strand <- unlist(rmats_strand, recursive = FALSE)
+```
+##Strategy for displaying A3SS, A5SS and RI rMATS information
+To create bedfiles for visualization of the "included" exonic and intronic regions, I mapped several of the rmats coordinate sets by hand. The coordinates that demarkate the blue regions will be used for generating a bed file, to view the alternatively included regions in IGV. 
+```{r  fig.cap="A3SS", out.width = '100%'}
+knitr::include_graphics("/Volumes/padgetrlab/courtney/MLL/Scripts/rmd_images/2018_12_14_A3SSdiagram.jpg")
+knitr::include_graphics("/Volumes/padgetrlab/courtney/MLL/Scripts/rmd_images/2018_12_14_A5SSdiagram.jpg")
+knitr::include_graphics("/Volumes/padgetrlab/courtney/MLL/Scripts/rmd_images/2018_12_14_RIdiagram.jpg")
+```
+###Examples of A3SS and A5SS coordinates plotted in IGV
+Lightest purple: longExonStart_0base,longExonEnd
+Middle Purple: shortES,shortEE
+Dark Purple: flankingES,flankingEE
+```{r pressure8, fig.cap="Sampling of Alternative 3' Splice Sites", out.width = '100%'}
+knitr::include_graphics("/Volumes/padgetrlab/courtney/MLL/Scripts/rmd_images/Screen Shot 2019-01-02 at 1.52.10 PM.png")
+knitr::include_graphics("/Volumes/padgetrlab/courtney/MLL/Scripts/rmd_images/Screen Shot 2019-01-07 at 3.21.42 PM.png")
+```
+#####Function to reformat the rmats files so that "start" and "end" represent the included exonic and intronic regions
+```{r eval=FALSE}
+rmatstobed <- function(rmats){
+  table <- rmats
+  table$ID2 <- table$ID
+ 
+   if(dim(rmats)[1]>0){
+#If Skipped Exons
+   if(all(rmats$type=="SE")){
+     table <- separate(data = table, col = ID, into = c("chr","strand","exonStart_0base","exonEnd","upstreamES","upstreamEE","downstreamES","downstreamEE"), sep = ",")
+     print(colnames(table))
+    #Moving each distinct start and stop (target, upstream & downstream) to the same position so they can be renamed
+     table <-  table[, !(names(table) %in% c("upstreamES","upstreamEE","downstreamES","downstreamEE"))]
+   }
+
+#If A3SS
+#Minus table1:shortEE-longExonEnd (need to rearrange)
+#Plus table1:longExonStart-shortES
+    if(all(rmats$type=="A3SS")){
+      table <- separate(data = table, col = ID, into = c("chr","strand","longExonStart_0base","longExonEnd","shortES","shortEE","flankingES","flankingEE"), sep = ",")
+      if(all(table$strand=="-")){
+        #print("It is minus!!!!!!!!!!!!!!!!!!!!!!")
+        table <-  table[, !(names(table) %in% c("longExonStart_0base","shortES","flankingES","flankingEE"))]
+         #rearrange table 1
+        table[c(3,4)] <- table[c(4,3)]
+      }
+      
+      if(all(table$strand=="+")){
+        table[, !(names(table) %in% c("longExonEnd","shortEE","flankingES","flankingEE"))]
+      }
+    }
+
+#If A5SS
+#Minus table1: blue region (longexonstart-shortES)
+#Plus table1: blue region( shortEE to longExonEnd) (need to rearrange)
+    if(all(rmats$type=="A5SS")){
+     #A5SS skipping information-Strand dependent
+      table <- separate(data = table, col = ID, into = c("chr","strand","longExonStart_0base","longExonEnd","shortES","shortEE","flankingES","flankingEE"), sep = ",")
+      if(all(table$strand=="-")){
+        table <-  table[, !(names(table) %in% c("longExonEnd","shortEE","flankingES","flankingEE"))]
+      }
+    
+      if(all(table$strand=="+")){
+        table <- table[, !(names(table) %in% c("longExonStart_0base","shortES","flankingES","flankingEE"))]
+        #rearrange table 
+        table[c(3,4)] <- table[c(4,3)] 
+     }
+    }
+
+#If RI
+      if(all(rmats$type=="RI")){
+        table <- separate(data = table, col = ID, into = c("chr","strand","riExonStart_0base","riExonEnd","upstreamES","upstreamEE","downstreamES","downstreamEE"), sep = ",")
+        table <-  table[, !(names(table) %in% c("riExonStart_0base","riExonEnd","upstreamES","downstreamEE"))]
+      }
+
+   colnames(table)[3] <- "start"
+   colnames(table)[4] <- "end"
+   table <- table[,c("chr","start","end","strand","type","ID2")] 
+   colnames(table)[6] <- "ID"
+  return(table)
+  }#ends "if table exists"
+}#end function identifyallexons 
+
+#This is now a list of lists. Each element contains a list of 3 dataframes.
+bedformatted <- lapply(rmats_strand, rmatstobed)
+```
+
+###Function to create bedfiles of included exon/intronic sequence 
+```{r eval=FALSE}
+testnumber <- "1"
+
+maketestfiles <- function(bedfile){
+  type <- bedfile$type[[1]]
+  strand <- bedfile$strand[[1]]
+  print(strand)
+  bedfile <- unique(bedfile)
+  pathtofile <- paste("/Volumes/padgetrlab/courtney/MLL/Scripts/rmd_images/",todaydate,"_","test",testnumber,"_",type,"_",strand,".bed", sep="")
+  print(pathtofile)
+  write.table(bedfile,pathtofile, quote = FALSE, col.names = FALSE, row.names = FALSE)
+}
+x <- lapply(bedformatted, maketestfiles)
+```
+####There is still noise in the data even after filtering for low transcript coverage and for alternatively spliced events           
+```{r fig.cap="A3SS", out.width = '100%'}
+knitr::include_graphics("/Volumes/padgetrlab/courtney/MLL/Scripts/rmd_images/Screen Shot 2019-01-18 at 12.47.43 PM.png")
+knitr::include_graphics("/Volumes/padgetrlab/courtney/MLL/Scripts/rmd_images/Screen Shot 2019-01-18 at 12.48.01 PM.png")
+knitr::include_graphics("/Volumes/padgetrlab/courtney/MLL/Scripts/rmd_images/Screen Shot 2019-01-18 at 12.48.31 PM.png")
+knitr::include_graphics("/Volumes/padgetrlab/courtney/MLL/Scripts/rmd_images/Screen Shot 2019-01-18 at 12.49.49 PM.png")
+```            
+
+
+
+##Filtering Improperly Labeled rMATS output
+**Strategy: I need to remove skipped exons that include introns. I need to break apart introns that include an exon. I need to remove A3SS and A5SS that are actually skipped exons**
+1) Skipped exons that contain an intron will be removed.
+2) Break up introns that span exons into two junctions with the same inclusion level (this will be used to calculate the final inclusion level later)
+3) I need to remove A3SS and A5SS that are actually upstream/downstream 3' or 5' splice sites respectively
+
+
+###rMATS duplicated measurements
+From spot checking the included exonic/intron regions from the rMATS data, I have realized that they often mislabel skipped exons as A3SS or A5SS. 
+
+```{r}
+knitr::include_graphics("/Volumes/padgetrlab/courtney/MLL/Scripts/rmd_images/altSSfilterstrategy.png")
+```
+
+###Create list of SE coordinates that would measure use of another exon's A3SS or A5SS
+```{r eval=FALSE}
+
+identifyskippedexons <- function(table){
+   if(all(table$type=="SE")){
+     tableID <- separate(data = table, col = ID, into = c("chr","strand","exonStart_0base","exonEnd","upstreamES","upstreamEE","downstreamES","downstreamEE"), sep = ",")
+      
+     if(all(tableID$strand=="-")){
+        tableID2 <- tableID[,c("downstreamES","exonEnd","upstreamEE")]
+        skippedexons <- unique(tableID2)
+        colnames(skippedexons) <- c("one","two","three")
+
+       }
+     if(all(tableID$strand=="+")){
+        tableID2 <- tableID[,c("upstreamEE","exonStart_0base","downstreamES")]
+        skippedexons <- unique(tableID2)
+        colnames(skippedexons) <- c("one","two","three")
+
+       }  
+   return(skippedexons)
+   }
+}
+
+skippedexons_list_3prime <- lapply(rmats_strand, identifyskippedexons)
+skippedexon_coordinates_3prime <- unique(do.call(rbind, skippedexons_list_3prime))
+
+
+
+identifyskippedexons <- function(table){
+   if(all(table$type=="SE")){
+     tableID <- separate(data = table, col = ID, into = c("chr","strand","exonStart_0base","exonEnd","upstreamES","upstreamEE","downstreamES","downstreamEE"), sep = ",")
+      
+     if(all(tableID$strand=="+")){
+        tableID2 <- tableID[,c("upstreamEE","exonEnd","downstreamES")]
+        skippedexons <- unique(tableID2)
+        colnames(skippedexons) <- c("one","two","three")
+
+       }
+     if(all(tableID$strand=="-")){
+        tableID2 <- tableID[,c("downstreamES","exonStart_0base","upstreamEE")]
+        skippedexons <- unique(tableID2)
+        colnames(skippedexons) <- c("one","two","three")
+
+       }  
+   return(skippedexons)
+   }
+}
+
+skippedexons_list_5prime <- lapply(rmats_strand, identifyskippedexons)
+skippedexon_coordinates_5prime <- unique(do.call(rbind, skippedexons_list_5prime))
+
+
+
+```
+
+###Identify A3SS and A5SS that are actually measuring skipped exons.
+Do they share the same junctions?
+```{r eval=FALSE}
+##A3SS
+identifya3ss <- function(table){
+   if(all(table$type=="A3SS")){
+     table$ID2 <- table$ID
+     tableID <- separate(data = table, col = ID2, into = c("chr","strand","longExonStart_0base","longExonEnd","shortES","shortEE","flankingES","flankingEE"), sep = ",")
+      
+     if(all(tableID$strand=="-")){
+        tableID2 <- tableID[,c("ID","flankingES","longExonEnd","shortEE")]
+        a3sscoord <- unique(tableID2)
+        colnames(a3sscoord) <- c("ID","one","two","three")
+        print(dim(a3sscoord))
+
+       }
+     if(all(tableID$strand=="+")){
+        tableID2 <- tableID[,c("ID","flankingEE","longExonStart_0base","shortES")]
+        a3sscoord <- unique(tableID2)
+        colnames(a3sscoord) <- c("ID","one","two","three")
+        print(dim(a3sscoord))
+
+     } 
+     
+        a3sscoord_subset <- join(a3sscoord, skippedexon_coordinates_3prime, by = c("one","two","three"), type = "inner", match = "all")
+        print(dim(a3sscoord_subset))
+   return(a3sscoord_subset)
+   }
+}
+
+a3ss_list <- lapply(rmats_strand, identifya3ss)
+a3ss_coordinates <- unique(do.call(rbind, a3ss_list))
+
+
+##A5SS
+identifya5ss <- function(table){
+   if(all(table$type=="A5SS")){
+      table$ID2 <- table$ID
+      tableID <- separate(data = table, col = ID2, into = c("chr","strand","longExonStart_0base","longExonEnd","shortES","shortEE","flankingES","flankingEE"), sep = ",")
+        
+      if(all(tableID$strand=="+")){
+        tableID2 <- tableID[,c("ID","shortEE","longExonEnd","flankingES")]
+         a5sscoord <- unique(tableID2)
+         colnames(a5sscoord) <- c("ID","one","two","three")
+         print(dim(a5sscoord))
+         print(head(a5sscoord))
+
+       }
+     if(all(tableID$strand=="-")){
+        tableID2 <- tableID[,c("ID","shortES","longExonStart_0base","flankingEE")]
+         a5sscoord <- unique(tableID2)
+         colnames(a5sscoord) <- c("ID","one","two","three")
+         print(dim(a5sscoord))
+
+     } 
+     
+        a5sscoord_subset <- join(a5sscoord, skippedexon_coordinates_5prime, by = c("one","two","three"), type = "inner", match = "all")
+        print(dim(a5sscoord_subset))
+   return(a5sscoord_subset)
+   }
+}
+
+a5ss_list <- lapply(rmats_strand, identifya5ss)
+a5ss_coordinates <- unique(do.call(rbind, a5ss_list))
+
+nrow(a5ss_coordinates)
+nrow(a3ss_coordinates)
+```
+
+###Remove A3SS and A5SS that are actually skipped exons to spot check in IGV
+```{r eval=FALSE}
+
+removeme <- function(table){
+  if(all(table$type=="A3SS")){
+    dim(table)
+    table <- table[!table$ID %in% unique(a3ss_coordinates$ID),]
+    dim(table)
+    table <- data.frame(lapply(table, as.character), stringsAsFactors=FALSE)
+    return(table)
+  }
+  else{
+    return(table)
+  }
+}
+bedformatted <- lapply(bedformatted, removeme)
+
+
+removeme <- function(table){
+  if(all(table$type=="A5SS")){
+    dim(table)
+    table <- table[!table$ID %in% unique(a5ss_coordinates$ID),]
+    dim(table)
+    table <- data.frame(lapply(table, as.character), stringsAsFactors=FALSE)
+    return(table)
+  }
+  else{
+    return(table)
+  }
+}
+bedformatted <- lapply(bedformatted, removeme)
+
+
+####Spot check to check on A3SS and A5SS Filtering
+#Make bedfiles test two
+testnumber <- "2"
+
+x <- lapply(bedformatted, maketestfiles)
+
+rmats_short <- bedformatted
+
+```
+
+###Are there duplicate coordiantes between SE and canonical/retained introns?
+```{r eval=FALSE}
+#bedformatted contains coordinates and IDs for SE and RI
+#5 is SE plus
+#6 is SE minus
+#7 is RI plus
+#8 is RI minus
+
+#duplicate: 
+duplicate_intron_plus <- join(bedformatted[[5]], bedformatted[[7]], by = c("chr","start","end"), type = "inner")
+dim(duplicate_intron_plus)
+duplicate_intron_minus <-join(bedformatted[[6]], bedformatted[[8]], by = c("chr","start","end"), type = "inner")
+dim(duplicate_intron_minus)
+duplicate_intron_plus <- join(bedformatted[[5]], bedfiles[[2]], by = c("chr","start","end"), type = "inner")
+dim(duplicate_intron_plus)
+duplicate_intron_minus <-join(bedformatted[[6]], bedfiles[[2]], by = c("chr","start","end"), type = "inner")
+dim(duplicate_intron_minus)
+
+```
+**Conclusion: With only 6 introns falling in this category, I'm not going to worry about it.** 
+
+
+While visualizing the A3SS and A5SS after removing events that are duplicates of skipped exons, there still remain a large number of SE, A3SS, and A5SS that are mislabeled. I believe that removing samples that encompass a canonical intron will improve the situation.
+
+#Identifying unnanotated SE, A3SS and A5SS
+```{r eval=FALSE}
+findnovel <- function(tables){
+  tables$start <- as.numeric(tables$start)
+  tables$end <- as.numeric(tables$end)
+  #identify noncanonical exons
+  tables <- anti_join(tables, bedfiles[[1]], by = c("chr","start", "end","strand")) 
+  return(tables)
+
+}
+
+bedformatted_novel <- lapply(bedformatted,findnovel)
+
+```
+
+
+```{r eval=FALSE}
+eachexon <- function(exon, intron_1){
+  if(exon["chr"]==intron_1["chr"]){
+    if(as.numeric(exon["start"])<=as.numeric(intron_1["start"]) & as.numeric(exon["end"])>=as.numeric(intron_1["end"])){
+      print(exon["ID"])
+      return(exon["ID"])
+    }
+  }
+}
+eachintron <- function(intron, exontable){
+  x <- apply(exontable, 1, eachexon, intron_1=intron)
+  return(x)
+}
+
+A3SS_ID_plus <- apply(bedfiles[[2]][which(bedfiles[[2]]$strand=="+")], 1, eachintron, exontable=bedformatted_novel[[1]])
+A3SS_ID_minus <- apply(bedfiles[[2]][which(bedfiles[[2]]$strand=="-")], 1, eachintron, exontable=bedformatted_novel[[2]])
+A5SS_ID_plus <- apply(bedfiles[[2]][which(bedfiles[[2]]$strand=="+")], 1, eachintron, exontable=bedformatted_novel[[3]])
+A5SS_ID_minus <- apply(bedfiles[[2]][which(bedfiles[[2]]$strand=="-")], 1, eachintron, exontable=bedformatted_novel[[4]])
+SE_ID_minus <- apply(bedfiles[[2]][which(bedfiles[[2]]$strand=="+")], 1, eachintron, exontable=bedformatted_novel[[5]])
+SE_ID_plus <- apply(bedfiles[[2]][which(bedfiles[[2]]$strand=="-")], 1, eachintron, exontable=bedformatted_novel[[6]])
+
+A3SS_ID_plus <- Filter(Negate(is.null), unlist(A3SS_ID_plus))
+A3SS_ID_minus <- Filter(Negate(is.null), unlist(A3SS_ID_minus))
+A5SS_ID_plus <- Filter(Negate(is.null), unlist(A5SS_ID_plus))
+A5SS_ID_minus <- Filter(Negate(is.null), unlist(A5SS_ID_minus))
+SE_ID_minus <- Filter(Negate(is.null), unlist(SE_ID_minus))
+SE_ID_plus <- Filter(Negate(is.null), unlist(SE_ID_plus))
+```
+
+How many splice junctions will be removed?
+```{r eval=FALSE}
+length(A3SS_ID_minus)
+length(A3SS_ID_plus)
+length(A5SS_ID_minus)
+length(A5SS_ID_plus)
+length(SE_ID_minus)
+length(SE_ID_plus)
+```
+
+
+#Remove Mislabeled A3SS and A5SS. 
+#Remove SE, A5SS, A3SS whose inclusion coordinates span an intron. 
+#Spot Check in IGV.
+```{r eval=FALSE}
+containintrons <- c(A3SS_ID_plus,A3SS_ID_minus,A5SS_ID_plus,A5SS_ID_minus,SE_ID_minus,SE_ID_plus,a3ss_coordinates$ID,a5ss_coordinates$ID)
+
+removeme <- function(table){
+  print(table$type[1])
+  print(nrow(table))
+  table <- table[!table$ID %in% unique(containintrons),]
+  print(nrow(table))
+  return(table)
+}
+bedformatted_nointrons <- lapply(bedformatted, removeme)
+
+#Make bedfiles test two
+testnumber <- "3"
+
+x <- lapply(bedformatted_nointrons, maketestfiles)
+
+rmats_short <- bedformatted
+```
+
+```{r}
+print("EZH2 BEFORE")
+knitr::include_graphics("/Volumes/padgetrlab/courtney/MLL/Scripts/rmd_images/Screen Shot 2019-01-24 at 11.55.27 AM.png")
+print("EZH2 AFTER")
+knitr::include_graphics("/Volumes/padgetrlab/courtney/MLL/Scripts/rmd_images/Screen Shot 2019-01-24 at 11.55.51 AM.png")
+```
+
+Checked Genes: LUC7L2, EZH2, DDX41, PUM1, GFPT1, SFXNS, USP4, NUPS4. Much better!
+
+```{r eval=FALSE}
+setwd("/Volumes/padgetrlab/courtney/MLL/all/combinedrmatstable/biologicalrelevance/")
+files <- list.files("/Volumes/padgetrlab/courtney/MLL/all/combinedrmatstable/biologicalrelevance/", pattern="_")
+
+readinfiles <- function(fileslist){
+  print(fileslist)  
+  rMATS <- fread(fileslist,sep=" ", stringsAsFactors = FALSE)
+  rMATS <- data.frame(rMATS)
+  colnames(rMATS)[1] <- "ID"
+  rMATS$type <- str_extract(fileslist, "A3SS|A5SS|SE|RI|MXE")
+  rmatsbed <- rMATS
+  
+}
+
+rmats <- lapply(files, readinfiles)
+```  
+
+###Remove lines with unwanted IDs
+```{r eval=FALSE}
+rmats_filtered <- lapply(rmats, removeme)
+```
+
+
+#Adding Names to rMATS Gene IDs
+###Preparing rMATS ranges to get GeneIDs by splitting ID column and taking first four rows to make bed coordinates
+```{r eval=FALSE}
+rMATS_ranges <- function(rmatsbed){
+  #Splitting column by comma and renaming
+  colnames(rmatsbed)[1] <- "ID"
+  saveID <- rmatsbed
+  rmatsbed <- strsplit(rmatsbed$ID, ",")
+  df <- data.frame(matrix(unlist(rmatsbed), nrow=length(rmatsbed), byrow=T),stringsAsFactors=FALSE)
+  rmatsbed <- df
+  rmatsbed <- rmatsbed[,c(1:4)]
+  colnames(rmatsbed) <- c("chr","strand","start","end")
+  
+  #Assigning column types
+  rmatsbed$start <- as.integer(as.character(rmatsbed$start))
+  rmatsbed$end <- as.integer(as.character(rmatsbed$end))
+  rmatsbed$chr <- as.character(rmatsbed$chr)
+  rmatsbed$strand <- as.character(rmatsbed$strand)
+  rmatsbed$ID <- saveID$ID
+  
+
+#Make GRanges object to be used with UCSC GRanges objects
+  rMATScoord <- makeGRangesFromDataFrame(rmatsbed,
+                         keep.extra.columns=TRUE,
+                         ignore.strand=FALSE,
+                         seqinfo=NULL,
+                         seqnames.field="chr", 
+                         start.field="start",
+                         end.field="end",
+                         strand.field="strand",
+                         starts.in.df.are.0based=TRUE)
+
+
+  ranges <- subsetByOverlaps(rMATScoord, UCSC_rng)
+
+  hits <- findOverlaps(rMATScoord, UCSC_rng,
+      maxgap=0L, minoverlap=1L,
+      type="within",
+      select=c("all"),
+      ignore.strand=FALSE)
+
+
+  colnames(genes) <- c("chr.1","strand.1","start.1","end.1","name")
+
+  rmats <- rmatsbed[queryHits(hits),]
+  genenames <- genes[subjectHits(hits),]
+
+  ID_names <- cbind(rmats,genenames)
+  ID_names <- ID_names[which(ID_names$strand==ID_names$strand.1),]
+  
+  ID_names <-ID_names %>%
+    group_by(ID) %>%
+    dplyr::summarize(name = paste(unique(name), collapse = "."))
+
+#Merge list of gene names with rMATS table
+  rMATS_ordered <- saveID[saveID$ID %in% ID_names$ID,]
+  rMATS_named <- merge(ID_names, rMATS_ordered,by="ID")
+
+  
+  #If has not name
+  unnamed <- saveID[!saveID$ID %in% ID_names$ID,]
+  unnamed$name <- "intergenic"
+  rMATS_named <- rbind(rMATS_named, unnamed)
+  
+  return(rMATS_named)
+}
+
+rmats_named <- lapply(rmats_filtered, rMATS_ranges)
+
+```
+**Spot checked one in each dataframe and they are correct** 1/18/19
+
+###Add gene names to IDs and use IDs as rownames 
+```{r eval=FALSE}
+IDname <- function(rmats){
+  rownames(rmats) <- paste(rmats$name,rmats$ID,sep=",")
+  rmats <- subset(rmats, select=-c(ID,type,name))
+  return(rmats)
+}
+rmats_named <- lapply(rmats_named, IDname)
+```
+
+###Write tables!
+```{r eval=FALSE}
+writetables <- function(rmats, filenames){
+  print(filenames)
+  pathto <- paste("/Volumes/padgetrlab/courtney/MLL/all/combinedrmatstable/biologicalrelevance/relabeled/",filenames, sep="")
+  write.table(rmats, pathto, col.names=T, quote = FALSE, sep=" ")
+  return(rmats)
+}
+rmats_named <- mapply(writetables, rmats_named, files)
+```
+
+
+

@@ -1,0 +1,94 @@
+---
+title: "Filtering for Junction Coverage"
+author: "Courtney Hershberger"
+date: "1/22/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+getwd()
+```
+
+```{r}
+library(matrixStats)
+```
+I have filtered for transcript coverage and for AS splicing events but I have not filtered for junction coverage. I will do that to try to reduce some more of the noise in my dataset.
+
+**Filtering Plan:**
+Keep junctions in which 10 reads have at least 1 sample covering the junction AND at least one sample has 3 reads over the junction
+```{r}
+IJC <- read.table("/Volumes/padgetrlab/courtney/MLL/all/combinedrmatstable/biologicalrelevance/SE_filteredlowcount_IJC.txt", header=T, stringsAsFactors = FALSE, sep=" ")
+SJC <- read.table("/Volumes/padgetrlab/courtney/MLL/all/combinedrmatstable/biologicalrelevance/SE_filteredlowcount_SJC.txt", header=T, stringsAsFactors = FALSE, sep=" ")
+inclengths <- read.table("/Volumes/padgetrlab/courtney/MLL/all/combinedrmatstable/biologicalrelevance/SE_inclengths.txt", header=T, stringsAsFactors = FALSE, sep=" ")
+filteredlowcount <- read.table("/Volumes/padgetrlab/courtney/MLL/all/combinedrmatstable/biologicalrelevance/SE_filteredlowcount.txt", header=T, stringsAsFactors = FALSE, sep=" ")
+```
+
+```{r}
+IJC$rowsum <- rowSums(IJC)
+SJC$rowsum <- rowSums(SJC)
+```
+
+```{r}
+hist(IJC$rowsum, main = "Total number of reads per junction in cohort")
+IJC_subset <- IJC[which(IJC$rowsum<=1000),]
+hist(IJC_subset$rowsum, main = "Distribution of total reads across junctions with lower coverage")
+
+length(which(IJC$rowsum==0))
+```
+
+```{r}
+hist(SJC$rowsum, main = "Total number of reads per junction in cohort")
+SJC_subset <- SJC[which(SJC$rowsum<=1000),]
+hist(SJC_subset$rowsum, main = "Distribution of total reads across junctions with lower coverage")
+
+length(which(SJC$rowsum==0))
+
+SJC$rowsum <- NULL
+IJC$rowsum <- NULL
+IJC_subset$rowsum <- NULL
+SJC_subset$rowsum <- NULL 
+```
+###Conclusion:
+All splicing changes are supported by at least 1 read in 10 patients. Additionally, each splicing event is supported by 10 reads in at least 5 patients. 
+
+###How many splicing changes are supported by at least 3 reads in a single patient?
+```{r}
+IJC$count.3 <- apply(IJC, 1, function(x) length(which(x>=3)))
+hist(IJC$count.3, main = "Number of samples with at least 3 reads supporting a splice junction")
+IJC_subset <- IJC[which(IJC$count.3<=50),]
+hist(IJC_subset$count.3, main = "Number of samples with at least 3 reads supporting a splice junction")
+```
+###Conclusion: 
+40000 Junctions have at least 3 reads in 1300-1397. Nearly 80 splice junctions have at least 3 reads in 0-5 samples. 
+
+
+###Number of splice junctions that are not supported by 3 reads in any single sample. 
+```{r}
+length(which(IJC$count.3<=0))
+```
+
+###How many splicing changes are supported by at least 3 reads in a single patient?
+```{r}
+SJC$count.3 <- apply(SJC, 1, function(x) length(which(x>=3)))
+hist(SJC$count.3, main = "Number of samples with at least 3 reads supporting a splice junction")
+SJC_subset <- SJC[which(SJC$count.3<=50),]
+hist(SJC_subset$count.3)
+```
+###Conclusion: 
+Over 40000 Junctions have at least 3 reads in 1300-1397. 5000 splice junctions have at least 3 reads in 1-100 samples.  There are 100 splice junctions that have 0-5 samples with at least 3 reads. 
+
+
+###Number of splice junctions that are not supported by 3 reads in any single sample. 
+```{r}
+length(which(SJC$count.3<=0))
+```
+Seven of these splice junctions have no samples with at least 3 reads. 
+
+###Action
+Every splice junction had at least 1 read covering the junction in 10 samples. Only 8 splice junctions did not have at least 3 reads in a single sample. There is no point in filtering out 8 splice junctions. If we decide to be more strict with the filtering in the future, I will return to this script and revise it. 
+
+
